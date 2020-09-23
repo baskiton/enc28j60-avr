@@ -1,0 +1,27 @@
+{
+    "name": "ENC28J60",
+    "version": "0.1.0",
+    "description": "Library for ENC28J60 - Stand-Alone Ethernet Controller with SPI Interface.",
+    "keywords": "avr, baskiton, ethernet, enc28j60, 28j60",
+    "repository":
+    {
+        "type": "git",
+        "url": "https://github.com/baskiton/enc28j60-avr.git"
+    },
+    "authors":
+    [
+        {
+            "name": "Alexander Baskikh",
+            "email": "baskiton@mail.ru",
+            "url": "https://t.me/baskiton",
+            "maintainer": true
+        }
+    ],
+    "license": "MIT",
+    "frameworks": ["arduino"],
+    "platforms": ["atmelavr"],
+    "dependencies": {
+        "defines": "^1.0.0",
+        "spi": "^1.2.0"
+    }
+}
