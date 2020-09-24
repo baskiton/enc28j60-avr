@@ -34,7 +34,7 @@ typedef struct eth_controls {
 #define ETHER_FREQ 20000000U
 
 /* Control registers */
-enum CR_ALL {    // for all banks
+enum CR_COMMON {    // Common control registers (for all banks)
     ENC28J60_EIE = 0x1BU,   // INTIE    PKTIE   DMAIE   LINKIE  TXIE    r       TXERIE  RXERIE
     ENC28J60_EIR,           // —        PKTIF   DMAIF   LINKIF  TXIF    r       TXERIF  RXERIF
     ENC28J60_ESTAT,         // INT      BUFER   r       LATECOL —       RXBUSY  TXABRT  CLKRDY

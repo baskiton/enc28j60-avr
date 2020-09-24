@@ -150,14 +150,76 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
 
     /* reset routine */
     enc28j60_soft_reset();
+
+    /* INITIALIZATION */
     
-    /*
-    CLKRDY bit must be polled before
-    transmitting packets, enabling packet
-    reception or accessing any MAC, MII or
-    PHY registers. */
+    /* Receive Buffer
+       Set ERXST and ERXND pointer - receive buffer. For example: 0x0000 - 0x0FFF.
+       For tracking, the ERXRDPT registers should be programmed with the same value
+       (ERXRDPTL first, followed by ERXRDPTH).
+     */
+    change_memory_bank(0);
+    wcr(ENC28J60_ERXSTL, 0);    // ERXST = 0x0000
+    wcr(ENC28J60_ERXSTH, 0);
+    wcr(ENC28J60_ERXNDL, 0xFF); // ERXND = 0x0FFF
+    wcr(ENC28J60_ERXNDH, 0x0F);
+    wcr(ENC28J60_ERXRDPTL, 0);  // ERXRDPT = ERXST = 0x0000
+    wcr(ENC28J60_ERXRDPTH, 0);
     
+    /* Transmit Buffer
+       No explicit action is required to initialize the transmission buffer.
+     */
+
+    /* Receive Filters
+       The appropriate receive filters should be enabled or disabled by writing to the ERXFCON register.
+       By default is set UCEN, CRCEN, BCEN
+     */
+    change_memory_bank(1);
+    wcr(ENC28J60_ERXFCON, (_BV(UCEN) | _BV(CRCEN) | _BV(BCEN)));
+
+    /* Waiting for OST
+       CLKRDY bit must be polled before
+       transmitting packets, enabling packet
+       reception or accessing any MAC, MII or
+       PHY registers.
+     */
+    while (rcr(ENC28J60_ESTAT, false) & _BV(CLKRDY)) {}
     
+    /* MAC Initialization Settings
+        1. Set the MARXEN bit in MACON1 to enable the MAC to receive frames.
+            If using full duplex, also set TXPAUS and RXPAUS.
+        2. Configure the PADCFG (101), TXCRCEN and FULDPX bits of MACON3.
+            Set the FRMLNEN bit to enable frame length status reporting.
+            The FULDPX bit should be set if the app will be connected to a
+            full-duplex configured remote node; otherwise, it should be left clear.
+        3. Configure the bits in MACON4. For conformance to the IEEE 802.3 standard, set the DEFER bit.
+        4. Program the MAMXFL registers with the maximum frame length to be
+            permitted to be received or transmitted. Normal network nodes are
+            designed to handle packets that are 1518 bytes or less.
+        5. Configure the Back-to-Back Inter-Packet Gap register, MABBIPG.
+            0x15 for Full-Duplex mode;
+            0x12 for Half-Duplex mode.
+        6. Configure the Non-Back-to-Back Inter-Packet Gap register low byte, MAIPGL.
+            Most applications will program this register with 0x12.
+        7. If Half-Duplex is used, the MAIPGH should be programmed.
+            Most applications will program this register to 0x0C.
+        8. If Half-Duplex is used, program the Retransmission and
+            Collision Window registers, MACLCON1 and MACLCON2.
+            Most applications will not need to change the default Reset values.
+            If the network is spread over exceptionally long cables,
+            the default value of MACLCON2 may need to be increased.
+        9. Program the local MAC address into the MAADR1:MAADR6 registers.
+     */
+
+    /* PHY Initialization Settings
+        For proper duplex operation, the PHCON1.PDPXMD bit must also match the value of the MACON3.FULDPX bit.
+        If using Half-Duplex, may to set the PHCON2.HDLDIS bit to prevent automatic loopback of the data which is transmitted.
+
+        The PHLCON register controls the outputs of LEDA and LEDB.
+        If an application requires a LED configuration other than the default,
+        PHLCON must be altered to match the new requirements.
+     */
+
 }
 
 uint8_t enc28j60_read_rev_id(void) {
