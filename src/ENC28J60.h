@@ -20,6 +20,7 @@
 
 #include <defines.h>
 
+/*! TODO: Move to <defines.h> */
 struct avr_pin {
     uint8_t pin_num;
     volatile uint8_t *port;
@@ -31,7 +32,20 @@ typedef struct eth_controls {
     struct avr_pin intr;
 } eth_pins;
 
+union mac_u {
+  uint64_t mac_64;
+  struct {
+    uint8_t mac_6;
+    uint8_t mac_5;
+    uint8_t mac_4;
+    uint8_t mac_3;
+    uint8_t mac_2;
+    uint8_t mac_1;
+  } mac_s;
+};
+
 #define ETHER_FREQ 20000000U
+#define ETHER_MAX_FRAME_LEN 1518U
 
 /* Control registers */
 enum CR_COMMON {    // Common control registers (for all banks)
@@ -141,14 +155,14 @@ enum CR_BANK_1 {    // for bank 1
 };
 
 enum ERXFCON_bits {     // 1010_0001 on reset
-    BCEN,
-    MCEN,
-    HTEN,
-    MPEN,
-    PMEN,
-    CRCEN,
-    ANDOR,
-    UCEN
+    BCEN,   // Broadcast Filter Enable bit
+    MCEN,   // Multicast Filter Enable bit
+    HTEN,   // Hash Table Filter Enable bit
+    MPEN,   // Magic Packet™ Filter Enable bit
+    PMEN,   // Pattern Match Filter Enable bit
+    CRCEN,  // Post-Filter CRC Check Enable bit
+    ANDOR,  // AND/OR Filter Select bit
+    UCEN    // Unicast Filter Enable bit
 };
 
 enum CR_BANK_2 {    // for bank 2
@@ -171,32 +185,32 @@ enum CR_BANK_2 {    // for bank 2
 };
 
 enum MACON1_bits {      // ---0_0000 on reset
-    MARXEN,
-    PASSALL,
-    RXPAUS,
-    TXPAUS
+    MARXEN,     // MAC Receive Enable bit
+    PASSALL,    // Pass All Received Frames Enable bit
+    RXPAUS,     // Pause Control Frame Reception Enable bit
+    TXPAUS      // Pause Control Frame Transmission Enable bit
 };
 
 enum MACON3_bits {      // 0000_0000 on reset
-    FULDPX,
-    FRMLNEN,
-    HFRMEN,
-    PHDREN,
-    TXCRCEN,
-    PADCFG0,
-    PADCFG1,
-    PADCFG2
+    FULDPX,     // MAC Full-Duplex Enable bit
+    FRMLNEN,    // Frame Length Checking Enable bit
+    HFRMEN,     // Huge Frame Enable bit
+    PHDREN,     // Proprietary Header Enable bit
+    TXCRCEN,    // Transmit CRC Enable bit
+    PADCFG0,    // Automatic Pad and CRC Configuration bit 0
+    PADCFG1,    // Automatic Pad and CRC Configuration bit 1
+    PADCFG2     // Automatic Pad and CRC Configuration bit 2
 };
 
 enum MACON4_bits {      // -000_--00 on reset
-    NOBKOFF = 4U,
-    BPEN,
-    DEFER
+    NOBKOFF = 4U,   // No Backoff Enable bit (applies to half duplex only)
+    BPEN,           // No Backoff During Backpressure Enable bit (applies to half duplex only)
+    DEFER           // Defer Transmission Enable bit (applies to half duplex only)
 };
 
 enum MICMD_bits {       // ----_--00 on reset
-    MIIRD,
-    MIISCAN
+    MIIRD,      // MII Read Enable bit
+    MIISCAN     // MII Scan Enable bit
 };
 
 enum CR_BANK_3 {    // for bank 3
@@ -219,20 +233,20 @@ enum CR_BANK_3 {    // for bank 3
 };
 
 enum EBSTCON_bits {     // 0000_0000 on reset
-    BISTST,
-    TME,
-    TMSEL0,
-    TMSEL1,
-    PSEL,
-    PSV0,
-    PSV1,
-    PSV2
+    BISTST, // Built-in Self-Test Start/Busy bit
+    TME,    // Test Mode Enable bit
+    TMSEL0, // Test Mode Select bit 0
+    TMSEL1, // Test Mode Select bit 1
+    PSEL,   // Port Select bit
+    PSV0,   // Pattern Shift Value bit 0
+    PSV1,   // Pattern Shift Value bit 1
+    PSV2    // Pattern Shift Value bit 2
 };
 
 enum MISTAT_bits {      // ----_0000 on reset
-    BUSY,
-    SCAN,
-    NVALID
+    BUSY,   // MII Management Busy bit
+    SCAN,   // MII Management Scan Operation bit
+    NVALID  // MII Management Read Data Not Valid bit
 };
 
 enum ECOCON_bits {      // reset to ----_-100 on Power-on and ----_-uuu on all other reset
@@ -247,11 +261,80 @@ enum EFLOCON_bits {     // ----_-000 on reset
     FULDPXS
 };
 
+enum PHY_REGS {
+    ENC28J60_PHCON1,
+    ENC28J60_PHSTAT1,
+    ENC28J60_PHID1,
+    ENC28J60_PHID2,
+    ENC28J60_PHCON2 = 0x10,
+    ENC28J60_PHSTAT2,
+    ENC28J60_PHIE,
+    ENC28J60_PHIR,
+    ENC28J60_PHLCON,
+};
+
+enum PHCON1_bits {  // 00--_00-q_0---_---- on reset
+    PDPXMD = 8U,    // PHY Duplex Mode bit
+    PPWRSV = 11U,   // PHY Power-Down bit
+    PLOOPBK = 14U,  // PHY Loopback bit
+    PRST,   // PHY Software Reset bit
+};
+
+enum PHSTAT1_bits { // ---1_1---_----_-00- on reset
+    JBSTAT = 1U,    // PHY Latching Jabber Status bit
+    LLSTAT, // PHY Latching Link Status bit
+    PHDPX = 11U,    // PHY Half-Duplex Capable bit
+    PFDPX   // PHY Full-Duplex Capable bit
+};
+
+enum PHCON2_bits {  // -000_0000_0000_0000 on reset
+    HDLDIS = 8U,    // PHY Half-Duplex Loopback Disable bit
+    JABBER = 10,    // Jabber Correction Disable bit
+    TXDIS = 13U,    // Twisted-Pair Transmitter Disable bit
+    FRCLNK  // PHY Force Linkup bit
+};
+
+enum PHSTAT2_bits { // --00_00q-_--0-_---- on reset
+    PLRITY = 5U,    // Polarity Status bit
+    DPXSTAT = 9U,   // PHY Duplex Status bit
+    LSTAT,      // PHY Link Status bit (non-latching)
+    COLSTAT,    // PHY Collision Status bit
+    RXSTAT,     // PHY Receive Status bit
+    TXSTAT      // PHY Transmit Status bit
+};
+
+enum PHIE_bits {    // 0000_0000_0000_0000 on reset
+    PGEIE = 1U, // PHY Global Interrupt Enable bit
+    PLNKIE = 4U // PHY Link Change Interrupt Enable bit
+};
+
+enum PHIR_bits {    // xxxx_xxxx_xx00_00x0 on reset
+    PGIF = 2U,  // PHY Global Interrupt Flag bit
+    PLNKIF = 4U // PHY Link Change Interrupt Flag bit
+};
+
+enum PHLCON_bits {  // 0011_0100_0010_001x on reset
+    STRCH = 1U, // LED Pulse Stretching Enable bit 
+    LFRQ0,  // LED Pulse Stretch Time Configuration bit 0
+    LFRQ1,  // LED Pulse Stretch Time Configuration bit 1
+    LBCFG0, // LEDB Configuration bit 0
+    LBCFG1, // LEDB Configuration bit 1
+    LBCFG2, // LEDB Configuration bit 2
+    LBCFG3, // LEDB Configuration bit 3
+    LACFG0, // LEDA Configuration bit 0
+    LACFG1, // LEDA Configuration bit 1
+    LACFG2, // LEDA Configuration bit 2
+    LACFG3  // LEDA Configuration bit 3
+};
+
 extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                           uint8_t rst_num, volatile uint8_t *rst_port,
-                          uint8_t intr_num, volatile uint8_t * intr_port);
+                          uint8_t intr_num, volatile uint8_t * intr_port,
+                          bool full_duplex);
 extern void enc28j60_soft_reset(void);
 
 extern uint8_t enc28j60_read_rev_id(void);
+extern uint16_t enc28j60_read_PHY(uint8_t reg);
+extern union mac_u enc28j60_get_mac(void);
 
 #endif  /* !ENC28J60_H */
