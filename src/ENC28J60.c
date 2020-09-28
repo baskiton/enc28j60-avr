@@ -83,7 +83,7 @@ static void wcr(uint8_t reg, uint8_t data) {
  * @param buf Data sequence to send
  * @param count Number of bytes in \p buf to write
  */
-static void wbm(uint8_t *buf, uint16_t count) {
+static void wbm(const uint8_t *buf, uint16_t count) {
     ether_sel();
     spi_write((3U << 5U) | 0b11010U);
     spi_write_buf(buf, count);
@@ -417,4 +417,61 @@ union mac_u enc28j60_get_mac(void) {
     mac.mac_s.mac_6 = rcr(ENC28J60_MAADR6, true);
 
     return mac;
+}
+
+/*!
+ * @brief Transmitting Packet
+ * @param mac_dest Destination MAC address
+ * @param mac_src Source MAC address
+ * @param type_len EtherType or length of the packet (amount of non-padding data; 1500 or less)
+ * @param data Data Packet Payload (0 - 1500 bytes)
+ * @param data_len Lenght of \p data buffer
+ * @param ppcb Per Packet Control Byte. 0 by default. Otherwise, refer to the datasheet on chapter 7.1
+ */
+void enc28j60_packet_transmit(const union mac_u *mac_dest, const union mac_u *mac_src,
+                              const uint16_t *type_len, const uint8_t *data, uint16_t data_len,
+                              uint8_t ppcb) {
+    /* check if transfer is in progress
+     */
+    while (rcr(ENC28J60_ECON1, false) & _BV(TXRTS)) {}
+    
+    /* set ETXST. It is recommended that an even address be used
+     */
+    
+    wbm(&ppcb, 1);
+
+    wbm(&mac_dest->mac_s.mac_1, 1);
+    wbm(&mac_dest->mac_s.mac_2, 1);
+    wbm(&mac_dest->mac_s.mac_3, 1);
+    wbm(&mac_dest->mac_s.mac_4, 1);
+    wbm(&mac_dest->mac_s.mac_5, 1);
+    wbm(&mac_dest->mac_s.mac_6, 1);
+    
+    wbm(&mac_src->mac_s.mac_1, 1);
+    wbm(&mac_src->mac_s.mac_2, 1);
+    wbm(&mac_src->mac_s.mac_3, 1);
+    wbm(&mac_src->mac_s.mac_4, 1);
+    wbm(&mac_src->mac_s.mac_5, 1);
+    wbm(&mac_src->mac_s.mac_6, 1);
+
+    wbm((uint8_t *)type_len + 1, 1);
+    wbm((uint8_t *)type_len, 1);
+
+    wbm(data, ((data_len > 1500) ? 1500 : data_len));
+
+    /* set ETXND. It should point to the last byte in the data payload.
+    */
+
+    bfc(ENC28J60_EIR, _BV(TXIF));
+    bfs(ENC28J60_EIE, _BV(TXIE));
+    // bfs(ENC28J60_EIE, _BV(INTIE));  // set EIE.INTIE to enable an interrupt when done (if desired).
+
+    bfs(ENC28J60_ECON1, _BV(TXRTS));    // Start the transmission process
+}
+
+/*!
+ * @brief Receiving Packet
+ */
+void enc28j60_packet_receive(void) {
+
 }
