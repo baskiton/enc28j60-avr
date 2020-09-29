@@ -265,6 +265,7 @@ static void rx_buf_init(uint16_t start, uint16_t end) {
 
 /*!
  * @brief TX buffer initialize.
+ * ETXST and ATXND will not be changed after transmit operation.
  * @param start Start address of TX buffer
  * @param end End address of TX buffer
  */
@@ -467,16 +468,11 @@ void enc28j60_get_mac(uint8_t *mac_buf) {
 
 /*!
  * @brief Transmitting Packet
- * @param mac_dest Destination MAC address
- * @param mac_src Source MAC address
- * @param type_len EtherType or length of the packet (amount of non-padding data; 1500 or less)
- * @param data Data Packet Payload (0 - 1500 bytes)
- * @param data_len Lenght of \p data buffer
+ * @param frame OSI Layer 2 Ethernet frame
+ * @param len Lenght of \p frame buffer (max 1514)
  * @param ppcb Per Packet Control Byte. 0 by default. Otherwise, refer to the datasheet on chapter 7.1
  */
-void enc28j60_packet_transmit(const uint8_t *mac_dest, const uint8_t *mac_src,
-                              const uint16_t *type_len, const uint8_t *data, uint16_t data_len,
-                              uint8_t ppcb) {
+void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) {
     uint16_t end;
 
     /* check if transfer is in progress. Needed? */
@@ -488,17 +484,10 @@ void enc28j60_packet_transmit(const uint8_t *mac_dest, const uint8_t *mac_src,
     
     /* write to buffer */
     wbm(&ppcb, 1);
-
-    wbm(mac_dest, MAC_ADDR_MAX_LEN);
-    wbm(mac_src, MAC_ADDR_MAX_LEN);
-
-    wbm((uint8_t *)type_len + 1, 1);
-    wbm((uint8_t *)type_len, 1);
-
-    wbm(data, ((data_len > 1500) ? 1500 : data_len));
+    wbm(frame, len);
 
     /* set ETXND. It should point to the last byte in the data payload. */
-    end = ENC28J60_TXSTART_INIT + data_len + 6 + 6 + 2;
+    end = ENC28J60_TXSTART_INIT + len;
     wcr(ENC28J60_ETXNDL, (uint8_t)end);
     wcr(ENC28J60_ETXNDH, (uint8_t)(end >> 8));
 
