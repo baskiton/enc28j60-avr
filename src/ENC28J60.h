@@ -124,7 +124,7 @@ enum ECON1_bits {   // 0000_0000 on reset
     TXRST   // Transmit Logic Reset bit
 };
 
-/* Bank 0                    MAMI | BANK | ADDR */
+/* Bank 0                   DUMMY | BANK | ADDR */
 #define ENC28J60_ERDPTL     (0x00 | 0x00 | 0x00)    // Read Pointer Low Byte (ERDPT<7:0>)
 #define ENC28J60_ERDPTH     (0x00 | 0x00 | 0x01)    // Read Pointer High Byte (ERDPT<12:8>)
 #define ENC28J60_EWRPTL     (0x00 | 0x00 | 0x02)    // Write Pointer Low Byte (EWRPT<7:0>)
@@ -150,7 +150,7 @@ enum ECON1_bits {   // 0000_0000 on reset
 #define ENC28J60_EDMACSL    (0x00 | 0x00 | 0x16)    // DMA Checksum Low Byte (EDMACS<7:0>)
 #define ENC28J60_EDMACSH    (0x00 | 0x00 | 0x17)    // DMA Checksum High Byte (EDMACS<15:8>)
 
-/* Bank 1                    MAMI | BANK | ADDR */
+/* Bank 1                   DUMMY | BANK | ADDR */
 #define ENC28J60_EHT0       (0x00 | 0x20 | 0x00)    // Hash Table Byte 0 (EHT<7:0>)
 #define ENC28J60_EHT1       (0x00 | 0x20 | 0x01)    // Hash Table Byte 1 (EHT<15:8>)
 #define ENC28J60_EHT2       (0x00 | 0x20 | 0x02)    // Hash Table Byte 2 (EHT<23:16>)
@@ -185,7 +185,7 @@ enum ERXFCON_bits {     // 1010_0001 on reset
     UCEN    // Unicast Filter Enable bit
 };
 
-/* Bank 2                                   MAMI | BANK | ADDR */
+/* Bank 2                                  DUMMY | BANK | ADDR */
 #define ENC28J60_MACON1     (ENC28J60_DUMMY_MASK | 0x40 | 0x00) // — — — r TXPAUS RXPAUS PASSALL MARXEN
 #define ENC28J60_MACON3     (ENC28J60_DUMMY_MASK | 0x40 | 0x02) // PADCFG2 PADCFG1 PADCFG0 TXCRCEN PHDREN HFRMEN FRMLNEN FULDPX
 #define ENC28J60_MACON4     (ENC28J60_DUMMY_MASK | 0x40 | 0x03) // — DEFER BPEN NOBKOFF — — r r
@@ -232,7 +232,7 @@ enum MICMD_bits {       // ----_--00 on reset
     MIISCAN     // MII Scan Enable bit
 };
 
-/* Bank 3                                   MAMI | BANK | ADDR */
+/* Bank 3                                  DUMMY | BANK | ADDR */
 #define ENC28J60_MAADR5     (ENC28J60_DUMMY_MASK | 0x60 | 0x00) // MAC Address Byte 5 (MAADR<15:8>)
 #define ENC28J60_MAADR6     (ENC28J60_DUMMY_MASK | 0x60 | 0x01) // MAC Address Byte 6 (MAADR<7:0>)
 #define ENC28J60_MAADR3     (ENC28J60_DUMMY_MASK | 0x60 | 0x02) // MAC Address Byte 3 (MAADR<31:24>), OUI Byte 3

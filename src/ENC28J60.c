@@ -1,5 +1,7 @@
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/pgmspace.h>
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -13,6 +15,9 @@ static struct spi_device_s ether;
 
 #define ether_sel() (bit_clear(*(ether.cs.port), ether.cs.pin_num))
 #define ether_desel() (bit_set(*(ether.cs.port), ether.cs.pin_num))
+
+static uint8_t rcr(uint8_t addr);
+static void wcr(uint8_t addr, uint8_t data);
 
 /*!
  * TODO: Move to <defines.h>
@@ -154,7 +159,7 @@ static uint16_t phy_read(uint8_t reg) {
     _delay_us(10.24);
     while (rcr(ENC28J60_MISTAT) & _BV(BUSY)) {}
     bfc(ENC28J60_MICMD, _BV(MIIRD));
-    result = rcr(ENC28J60_MIRDH) << 8U;
+    result = rcr(ENC28J60_MIRDH) << 8;
     result |= rcr(ENC28J60_MIRDL);
 
     return result;
@@ -204,7 +209,7 @@ static uint16_t phy_scan_rd(void) {
 
     while (rcr(ENC28J60_MISTAT) & _BV(NVALID)) {}
 
-    result = rcr(ENC28J60_MIRDH) << 8U;
+    result = rcr(ENC28J60_MIRDH) << 8;
     result |= rcr(ENC28J60_MIRDL);
 
     return result;
@@ -220,9 +225,9 @@ static void get_oui(uint8_t *oui) {
     tmp = phy_read(ENC28J60_PHID2) >> 10;
     tmp |= ((uint32_t)phy_read(ENC28J60_PHID1) << 6);
 
-    oui[0] = (uint8_t)((tmp >> 16) & 0xFFU);
-    oui[1] = (uint8_t)((tmp >> 8) & 0xFFU);
-    oui[2] = (uint8_t)(tmp & 0xFFU);
+    oui[0] = bits_swap(((tmp >> 16) & 0xFFU));
+    oui[1] = bits_swap(((tmp >> 8) & 0xFFU));
+    oui[2] = bits_swap((tmp & 0xFFU));
 }
 
 /*!
@@ -247,8 +252,8 @@ static uint16_t erxrdpt_workaround(uint16_t next_packet_ptr, uint16_t rxst, uint
 static void rx_buf_init(uint16_t start, uint16_t end) {
     uint16_t erxrdpt;
 
-    if ((start > 0x1FFF) || (end > 0x1FFF) | (start > end)) {
-        printf_P(PSTR("%s(%d, %d) - RX buf bad parameters!"), __func__, start, end);
+    if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
+        printf_P(PSTR("%s(%d, %d) - RX buf bad parameters!\n"), __func__, start, end);
         return;
     }
     
@@ -270,8 +275,8 @@ static void rx_buf_init(uint16_t start, uint16_t end) {
  * @param end End address of TX buffer
  */
 static void tx_buf_init(uint16_t start, uint16_t end) {
-    if ((start > 0x1FFF) || (end > 0x1FFF) | (start > end)) {
-        printf_P(PSTR("%s(%d, %d) - TX buf bad parameters!"), __func__, start, end);
+    if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
+        printf_P(PSTR("%s(%d, %d) - TX buf bad parameters!\n"), __func__, start, end);
         return;
     }
     
@@ -333,8 +338,8 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     enc28j60_soft_reset();
 
     /* INITIALIZATION */
-    uint8_t revid = rcr(ENC28J60_EREVID) & 0x1FU;
-    if ((revid == 0x00U) || (revid == 0xFFU)) {
+    uint8_t revid = rcr(ENC28J60_EREVID) & 0x1F;
+    if ((revid == 0x00) || (revid == 0xFFU)) {
         printf_P(PSTR("%s() Invalid REVID %d\n"), __func__, revid);
         return;
     }
@@ -388,20 +393,20 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
         wcr(ENC28J60_MACON1, (_BV(MARXEN) | _BV(TXPAUS) | _BV(RXPAUS)));    // 1.
         wcr(ENC28J60_MACON3, (_BV(PADCFG2) | _BV(PADCFG0) | _BV(TXCRCEN) | _BV(FRMLNEN) | _BV(FULDPX)));    // 2.
         wcr(ENC28J60_MACON4, _BV(DEFER));   // 3.
-        wcr(ENC28J60_MABBIPG, 0x15U);   // 5.
+        wcr(ENC28J60_MABBIPG, 0x15);   // 5.
     } else {
         wcr(ENC28J60_MACON1, _BV(MARXEN));  // 1.
         wcr(ENC28J60_MACON3, (_BV(PADCFG2) | _BV(PADCFG0) | _BV(TXCRCEN) | _BV(FRMLNEN)));  // 2.
         wcr(ENC28J60_MACON4, (_BV(DEFER) | _BV(BPEN) | _BV(NOBKOFF)));  // 3.
-        wcr(ENC28J60_MABBIPG, 0x12U);   // 5.
-        wcr(ENC28J60_MAIPGH, 0x0CU);    // 7.
-        wcr(ENC28J60_MACLCON1, 0x0FU);  // 8.   defaul value
-        wcr(ENC28J60_MACLCON2, 0x37U);  // 8.   defaul value
+        wcr(ENC28J60_MABBIPG, 0x12);   // 5.
+        wcr(ENC28J60_MAIPGH, 0x0C);    // 7.
+        wcr(ENC28J60_MACLCON1, 0x0F);  // 8.   defaul value
+        wcr(ENC28J60_MACLCON2, 0x37);  // 8.   defaul value
     }
 
     wcr(ENC28J60_MAMXFLL, (uint8_t)(ENC28J60_MAX_FRAME_LEN & 0xFFU));   // 4.
-    wcr(ENC28J60_MAMXFLH, (uint8_t)(ENC28J60_MAX_FRAME_LEN >> 8U));     // MAMXFL = 1518
-    wcr(ENC28J60_MAIPGL, 0x12U);    // 6.
+    wcr(ENC28J60_MAMXFLH, (uint8_t)(ENC28J60_MAX_FRAME_LEN >> 8));     // MAMXFL = 1518
+    wcr(ENC28J60_MAIPGL, 0x12);    // 6.
 
     get_oui(oui);
     
@@ -429,6 +434,8 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
         phy_write(ENC28J60_PHCON1, (phy_read(ENC28J60_PHCON1) & ~_BV(PDPXMD)));
         phy_write(ENC28J60_PHCON2, (phy_read(ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
+
+    printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
 }
 
 /*!
@@ -438,7 +445,7 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
 uint8_t enc28j60_read_rev_id(void) {
     uint8_t result;
 
-    result = rcr(ENC28J60_EREVID) & 0x1FU;
+    result = rcr(ENC28J60_EREVID) & 0x1F;
 
     return result;
 }

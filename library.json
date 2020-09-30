@@ -22,6 +22,6 @@
     "platforms": ["atmelavr"],
     "dependencies": {
         "defines-avr": "^1.0.0",
-        "spi-avr": "^1.2.0"
+        "spi-avr": "^1.2.1"
     }
 }
