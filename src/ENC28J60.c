@@ -5,16 +5,20 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <defines.h>
 #include <spi.h>
 
 #include "ENC28J60.h"
 
-static struct spi_device_s ether;
+#define ether_sel() (bit_clear(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
+#define ether_desel() (bit_set(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
 
-#define ether_sel() (bit_clear(*(ether.cs.port), ether.cs.pin_num))
-#define ether_desel() (bit_set(*(ether.cs.port), ether.cs.pin_num))
+static struct enc28j60_dev {
+    struct spi_device_s spi_dev;
+    uint16_t next_packet_ptr;
+} enc28j60;
 
 static uint8_t rcr(uint8_t addr);
 static void wcr(uint8_t addr, uint8_t data);
@@ -28,13 +32,12 @@ static void wcr(uint8_t addr, uint8_t data);
  * http://www.inwap.com/pdp10/hbaker/hakmem/hacks.html#item167
  * 
  * @example:
- * 
  *   1 byte
- * _____________
- *  0100  0001
+ * ____________
+ *  0110  0001
  *      ||
  *      \/
- *  1000  0010
+ *  1000  0110
  */
 static uint8_t bits_swap(uint8_t data) {
     return (uint8_t)(((uint64_t)data * 0x0202020202U & 0x010884422010U) % 0x3ffU);
@@ -84,8 +87,12 @@ static uint8_t rcr(uint8_t addr) {
  * @brief Read Buffer Memory
  * @param buf Buffer to write receiving data
  * @param count Number of bytes to read
+ * @param addr Address of start reading
  */
-static void rbm(uint8_t *buf, uint16_t count) {
+static void rbm(uint8_t *buf, uint16_t count, uint16_t addr) {
+    wcr(ENC28J60_ERDPTL, (uint8_t)addr);
+    wcr(ENC28J60_ERDPTH, (uint8_t)(addr >> 8));
+
     ether_sel();
     spi_write(ENC28J60_RBM_OP);
     spi_read_buf(buf, count);
@@ -235,10 +242,9 @@ static void get_oui(uint8_t *oui) {
  * (by ERRATA, issue #14)
  */
 static uint16_t erxrdpt_workaround(uint16_t next_packet_ptr, uint16_t rxst, uint16_t rxnd) {
-    if (next_packet_ptr == rxst)
+    if ((next_packet_ptr == rxst) || ((next_packet_ptr - 1) > rxnd))
         return rxnd;
-    else
-        return (next_packet_ptr - 1);
+    return (next_packet_ptr - 1);
 }
 
 /*!
@@ -253,18 +259,19 @@ static void rx_buf_init(uint16_t start, uint16_t end) {
     uint16_t erxrdpt;
 
     if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
-        printf_P(PSTR("%s(%d, %d) - RX buf bad parameters!\n"), __func__, start, end);
+        printf_P(PSTR("rx_buf_init(%d, %d) - RX buf bad parameters!\n"), start, end);
         return;
     }
     
+    enc28j60.next_packet_ptr = start;
     wcr(ENC28J60_ERXSTL, (uint8_t)start);
     wcr(ENC28J60_ERXSTH, (uint8_t)(start >> 8));
 
     wcr(ENC28J60_ERXNDL, (uint8_t)end);
     wcr(ENC28J60_ERXNDH, (uint8_t)(end >> 8));
 
-    erxrdpt = erxrdpt_workaround(start, start, end);
-    wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);  // ERXRDPT = ERXST
+    erxrdpt = erxrdpt_workaround(enc28j60.next_packet_ptr, start, end);
+    wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);
     wcr(ENC28J60_ERXRDPTH, (uint8_t)(erxrdpt >> 8));
 }
 
@@ -276,7 +283,7 @@ static void rx_buf_init(uint16_t start, uint16_t end) {
  */
 static void tx_buf_init(uint16_t start, uint16_t end) {
     if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
-        printf_P(PSTR("%s(%d, %d) - TX buf bad parameters!\n"), __func__, start, end);
+        printf_P(PSTR("tx_buf_init(%d, %d) - TX buf bad parameters!\n"), start, end);
         return;
     }
     
@@ -285,6 +292,20 @@ static void tx_buf_init(uint16_t start, uint16_t end) {
 
     wcr(ENC28J60_ETXNDL, (uint8_t)end);
     wcr(ENC28J60_ETXNDH, (uint8_t)(end >> 8));
+}
+
+/*!
+ * @brief Calculate random access address of RX buffer
+ * @param addr Packet start address
+ * @param offset Offset
+ * @return Computed address
+ */
+static uint16_t rand_acc_addr_calc(uint16_t addr, uint16_t offset) {
+    uint16_t tmp = addr + offset;
+    
+    if (tmp > ENC28J60_RXEND_INIT)
+        return (tmp - (ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT + 1));
+    return tmp;
 }
 
 /*!
@@ -316,18 +337,17 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                    bool full_duplex) {
     uint8_t oui[3];
 
-    ether.cs.pin_num = cs_num;
-    ether.cs.port = cs_port;
-    ether.rst.pin_num = rst_num;
-    ether.rst.port = rst_port;
-    ether.intr.pin_num = intr_num;
-    ether.intr.port = intr_port;
-    ether.a0.pin_num = 0;
-    ether.a0.port = NULL;
+    enc28j60.spi_dev.cs.pin_num = cs_num;
+    enc28j60.spi_dev.cs.port = cs_port;
+    enc28j60.spi_dev.rst.pin_num = rst_num;
+    enc28j60.spi_dev.rst.port = rst_port;
+    enc28j60.spi_dev.intr.pin_num = intr_num;
+    enc28j60.spi_dev.intr.port = intr_port;
+    enc28j60.spi_dev.a0.pin_num = 0;
+    enc28j60.spi_dev.a0.port = NULL;
     
-    set_output(*(ether.cs.port - 1), ether.cs.pin_num);
-    // set_output(*(port - 1), rst);
-    set_input(*(ether.intr.port - 1), ether.intr.pin_num);
+    set_output(*(enc28j60.spi_dev.cs.port - 1), enc28j60.spi_dev.cs.pin_num);
+    set_input(*(enc28j60.spi_dev.intr.port - 1), enc28j60.spi_dev.intr.pin_num);
     
     spi_set_speed(ENC28J60_MAX_FREQ);
     
@@ -340,7 +360,7 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     /* INITIALIZATION */
     uint8_t revid = rcr(ENC28J60_EREVID) & 0x1F;
     if ((revid == 0x00) || (revid == 0xFFU)) {
-        printf_P(PSTR("%s() Invalid REVID %d\n"), __func__, revid);
+        printf_P(PSTR("enc28j60_init() - Invalid REVID %d\n"), revid);
         return;
     }
     
@@ -511,7 +531,106 @@ void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) 
 
 /*!
  * @brief Receiving Packet
+ * @param rx_handler Function pointer of the RX packet handler.
  */
-void enc28j60_packet_receive(void) {
+void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
+    uint8_t rsv[ENC28J60_RSV_SIZE]; // receive status vector
+    uint16_t next_packet_ptr, packet_len, rx_status, erxrdpt, size_tmp, offset;
+    uint8_t *data, step_num;
+    /* ENABLING RECEPTION
+        1. If an interrupt is desired whenever a packet is received, set EIE.PKTIE and EIE.INTIE
+        2. If an interrupt is desired whenever a packet is dropped due
+            to insufficient buffer space, clear EIR.RXERIF and set both EIE.RXERIE and EIE.INTIE
+        3. Enable reception by setting ECON1.RXEN
+     */
+    bfs(ENC28J60_ECON1, _BV(RXEN));
 
+    /* reading receive status vector */
+    rbm(rsv, ENC28J60_RSV_SIZE, enc28j60.next_packet_ptr);
+    next_packet_ptr = (rsv[1] << 8) | rsv[0];
+    packet_len = (rsv[3] << 8) | rsv[2];
+    rx_status = (rsv[5] << 8) | rsv[4];
+    /** TODO: check the package was received successfully */
+    if (!(rx_status & _BV(RSV_RX_OK)) || (packet_len > ENC28J60_MAX_FRAME_LEN)) {
+        printf_P(PSTR("--- Receive Packet Error!  ---\n"));
+        // error - CRC or Len Check
+        if (rx_status & _BV(RSV_CRC_ERR))
+            printf_P(PSTR("--- --- CRC Error! --- --- ---\n"));
+        if (rx_status & _BV(RSV_LEN_CHECK_ERR))
+            printf_P(PSTR("--- --- Lenght Check Error! --\n"));
+        if ((packet_len > ENC28J60_MAX_FRAME_LEN))
+            printf_P(PSTR("--- --- Max Lenght Error!  ---\n"));
+        
+    } else {
+        /* reading received packets */
+        offset = ENC28J60_RSV_SIZE; // offset from the packet pointer
+        step_num = 0;
+        while (packet_len) {
+            // division into several steps with a maximum of 512 bytes
+            if (packet_len > 0x0200U) {
+                size_tmp = 0x0200;
+                packet_len -= 0x0200;
+            } else {
+                size_tmp = packet_len;
+                packet_len = 0;
+            }
+            
+            data = malloc(size_tmp);
+            if (data == NULL) {
+                // what to do if not enough memory?
+                printf_P(PSTR("Out of memory for RX buffer - %d bytes\n"), size_tmp);
+                break;
+            }
+            rbm(data, size_tmp, rand_acc_addr_calc(enc28j60.next_packet_ptr, offset));
+            rx_handler(data, size_tmp, step_num++);   // handling
+            free(data);
+            offset += size_tmp;
+        }
+    }
+
+    /* freeing receive buffer space */
+    erxrdpt = erxrdpt_workaround(next_packet_ptr, ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT);
+    wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);
+    wcr(ENC28J60_ERXRDPTH, (uint8_t)(erxrdpt >> 8));
+
+    /** At this moment \a rand_acc_addr_calc(enc28j60.next_packet_ptr,offset)
+     * must be equal to \a next_packet_ptr */
+    enc28j60.next_packet_ptr = next_packet_ptr;
+}
+
+/*!
+ * @brief Get size of free space of RX buffer
+ * @return Free space in the RX buffer
+ */
+uint16_t enc28j60_get_rx_free_space(void) {
+    uint8_t epktcnt;
+    uint16_t erxwrpt, erxrdpt, result;
+
+    epktcnt = rcr(ENC28J60_EPKTCNT);
+    while (true) {
+        erxwrpt = (uint16_t)rcr(ENC28J60_ERXWRPTL);
+        erxwrpt |= (uint16_t)rcr(ENC28J60_ERXWRPTH) << 8;
+        if (epktcnt == rcr(ENC28J60_EPKTCNT))
+            break;
+    }
+
+    erxrdpt = (uint16_t)rcr(ENC28J60_ERXRDPTL);
+    erxrdpt |= (uint16_t)rcr(ENC28J60_ERXRDPTH) << 8;
+
+    if (erxwrpt > erxrdpt)
+        result = (ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT) - (erxwrpt - erxrdpt);
+    else if (erxwrpt == erxrdpt)
+        result = ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT;
+    else
+        result = erxrdpt - erxwrpt - 1;
+
+    return result;
+}
+
+/*!
+ * @brief Check Link Status
+ * @return True if Link Up; False otherwise
+ */
+bool check_link(void) {
+    return (enc28j60_read_PHY(ENC28J60_PHSTAT2) & _BV(LSTAT)) >> LSTAT;
 }

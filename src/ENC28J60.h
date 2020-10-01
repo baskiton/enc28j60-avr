@@ -37,6 +37,8 @@ struct spi_device_s {
 
 
 #define MAC_ADDR_MAX_LEN 6U
+#define ENC28J60_TSV_SIZE 7U
+#define ENC28J60_RSV_SIZE 6U
 #define ENC28J60_MAX_FREQ 20000000U
 #define ENC28J60_MAX_FRAME_LEN 1518U
 
@@ -79,22 +81,22 @@ struct spi_device_s {
 #define ENC28J60_ECON1  0x1F    // TXRST    RXRST   DMAST   CSUMEN  TXRTS   RXEN    BSEL1   BSEL0
 
 enum EIE_bits {     // 0000_0000 on reset
-    RXERIE,
-    TXERIE,
-    TXIE = 3U,
-    LINKIE,
-    DMAIE,
-    PKTIE,
-    INTIE
+    RXERIE, // Receive Error Interrupt Enable bit
+    TXERIE, // Transmit Error Interrupt Enable bit
+    TXIE = 3U,  // Transmit Interrupt Enable bit
+    LINKIE, // Link Status Change Interrupt Enable bit
+    DMAIE,  // DMA Interrupt Enable bit
+    PKTIE,  // Receive Packet Pending Interrupt Enable bit
+    INTIE   // Global INT Interrupt Enable bit
 };
 
 enum EIR_bits {     // -000_0000 on reset
-    RXERIF,
-    TXERIF,
-    TXIF = 3U,
-    LINKIF,
-    DMAIF,
-    PKTIF
+    RXERIF, // Receive Error Interrupt Flag bit
+    TXERIF, // Transmit Error Interrupt Flag bit
+    TXIF = 3U,  // Transmit Interrupt Flag bit
+    LINKIF, // Link Change Interrupt Flag bit
+    DMAIF,  // DMA Interrupt Flag bit
+    PKTIF   // Receive Packet Pending Interrupt Flag bit
 };
 
 enum ESTAT_bits {   // 0000_-000 on reset
@@ -344,6 +346,23 @@ enum PHLCON_bits {  // 0011_0100_0010_001x on reset
     LACFG3  // LEDA Configuration bit 3
 };
 
+/* Receive Status Vector */
+enum RSV_bits {
+    RSV_LONG_DROP_EVENTS,   //  Indicates a packet over 50,000 bit times occurred or that a packet was dropped since the last receive.
+    RSV_CARRIER_EVENT = 2U, // Indicates that at some time since the last receive, a carrier event was detected. The carrier event is not associated with this packet. A carrier event is activity on the receive channel that does not result in a packet receive attempt being made.
+    RSV_CRC_ERR = 4U,   // Indicates that frame CRC field value does not match the CRC calculated by the MAC.
+    RSV_LEN_CHECK_ERR,  // Indicates that frame length field value in the packet does not match the actual data byte length and specifies a valid length.
+    RSV_LEN_OOR,    //  Indicates that frame type/length field was larger than 1500 bytes (type field).
+    RSV_RX_OK,  // Indicates that at the packet had a valid CRC and no symbol errors.
+    RSV_RX_MULTICAST,   // Indicates packet received had a valid Multicast address.
+    RSV_RX_BROADCAST,   // Indicates packet received had a valid Broadcast address.
+    RSV_DRIBBLE_NIBBLE, // Indicates that after the end of this packet, an additional 1 to 7 bits were received. The extra bits were thrown away.
+    RSV_RX_CTRL_FRAME,  // Current frame was recognized as a control frame for having a valid type/length designating it as a control frame.
+    RSV_RX_PAUSE_CTRL_FRAME,    // Current frame was recognized as a control frame containing a valid pause frame opcode and a valid destination address.
+    RSV_RX_UNKN_OPC,    // Current frame was recognized as a control frame but it contained an unknown opcode.
+    RSV_RX_VLAN_TYPE,   // Current frame was recognized as a VLAN tagged frame.
+    RSV_ZERO    // always zero
+};
 
 extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                           uint8_t rst_num, volatile uint8_t *rst_port,
@@ -354,5 +373,8 @@ extern void enc28j60_soft_reset(void);
 extern uint8_t enc28j60_read_rev_id(void);
 extern uint16_t enc28j60_read_PHY(uint8_t reg);
 extern void enc28j60_get_mac(uint8_t *mac_buf);
+extern uint16_t enc28j60_get_rx_free_space(void);
+extern void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t));
+extern bool check_link(void);
 
 #endif  /* !ENC28J60_H */
