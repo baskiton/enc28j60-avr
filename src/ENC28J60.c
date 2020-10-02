@@ -583,9 +583,9 @@ void enc28j60_packet_receive(void) {
             printf_P(PSTR("--- --- CRC Error! --- --- ---\n"));
         if (rx_status & _BV(RSV_LEN_CHECK_ERR))
             printf_P(PSTR("--- --- Lenght Check Error! --\n"));
-        if ((packet_len > ENC28J60_MAX_FRAME_LEN))
-            printf_P(PSTR("--- --- Max Lenght Error!  ---\n"));
-        
+        if (packet_len > ENC28J60_MAX_FRAME_LEN)
+            printf_P(PSTR("--- --- Max Lenght Error - %u\n"), packet_len);
+        next_packet_ptr = enc28j60.next_packet_ptr;
     } else {
         /* reading received packets */
         offset = ENC28J60_RSV_SIZE; // offset from the packet pointer
@@ -621,6 +621,7 @@ void enc28j60_packet_receive(void) {
     /** At this moment \a rand_acc_addr_calc(enc28j60.next_packet_ptr,offset)
      * must be equal to \a next_packet_ptr */
     enc28j60.next_packet_ptr = next_packet_ptr;
+    bfs(ENC28J60_ECON2, _BV(PKTDEC));   // decrement packet count
 }
 
 /*!
@@ -675,14 +676,16 @@ bool check_link(void) {
  */
 void enc28j60_irq_handler(void) {
     uint8_t intrs;
+
     bfc(ENC28J60_EIE, _BV(INTIE));  // disable interrupts
+    printf_P(PSTR("\nInterrupt has occurred:\n"));
 
     intrs = rcr(ENC28J60_EIR);
 
     /* Receive Error Interrupt */
     if (intrs & _BV(RXERIF)) {
         if (enc28j60_get_rx_free_space() <= 0) {
-            printf_P(PSTR("RX overflow\n"));
+            printf_P(PSTR("    RX overflow\n"));
             // drop packet or process?
         }
         bfc(ENC28J60_EIR, RXERIF);
@@ -700,7 +703,7 @@ void enc28j60_irq_handler(void) {
 
     /* Link Change Interrupt */
     if (intrs & _BV(LINKIF)) {
-        printf_P(PSTR("Link is %S\n"), check_link() ? PSTR("Up") : PSTR("Down"));
+        printf_P(PSTR("    Link is %S\n"), check_link() ? PSTR("Up") : PSTR("Down"));
 
         /* read PHIR to clear LINKIF */
         phy_read(ENC28J60_PHIR);
@@ -708,15 +711,17 @@ void enc28j60_irq_handler(void) {
 
     /* DMA Interrupt */
     if (intrs & _BV(DMAIF)) {
-        
+        bfc(ENC28J60_EIR, _BV(DMAIF));
     }
 
     /* Receive Packet Pending Interrupt
      * PKTIF is unreliable (Errate #6)
      * check EPKTCNT
      */
-    // if (intrs & _BV(PKTIF)) {
-    // }
+    if (intrs & _BV(PKTIF)) {
+        printf_P(PSTR("    Packet receive\n"));
+        enc28j60_packet_receive();
+    }
 
     bfs(ENC28J60_EIE, _BV(INTIE));  // enable interrupts
 }

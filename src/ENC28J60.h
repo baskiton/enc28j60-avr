@@ -376,5 +376,6 @@ extern void enc28j60_get_mac(uint8_t *mac_buf);
 extern int16_t enc28j60_get_rx_free_space(void);
 extern void enc28j60_packet_receive(void);
 extern bool check_link(void);
+extern void enc28j60_irq_handler(void);
 
 #endif  /* !ENC28J60_H */
