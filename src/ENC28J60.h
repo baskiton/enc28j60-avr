@@ -100,12 +100,12 @@ enum EIR_bits {     // -000_0000 on reset
 };
 
 enum ESTAT_bits {   // 0000_-000 on reset
-    CLKRDY,
-    TXABRT,
-    RXBUSY,
-    LATECOL = 4U,
-    BUFER = 6U,
-    INT
+    CLKRDY,         // Clock Ready bit
+    TXABRT,         // Transmit Abort Error bit
+    RXBUSY,         // Receive Busy bit
+    LATECOL = 4U,   // Late Collision Error bit
+    BUFER = 6U,     // Ethernet Buffer Error Status bit
+    INT             // INT Interrupt Flag bit
 };
 
 enum ECON2_bits {   // 1000_0--- on reset
@@ -367,14 +367,14 @@ enum RSV_bits {
 extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                           uint8_t rst_num, volatile uint8_t *rst_port,
                           uint8_t intr_num, volatile uint8_t * intr_port,
-                          bool full_duplex);
+                          bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t));
 extern void enc28j60_soft_reset(void);
 
 extern uint8_t enc28j60_read_rev_id(void);
 extern uint16_t enc28j60_read_PHY(uint8_t reg);
 extern void enc28j60_get_mac(uint8_t *mac_buf);
-extern uint16_t enc28j60_get_rx_free_space(void);
-extern void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t));
+extern int16_t enc28j60_get_rx_free_space(void);
+extern void enc28j60_packet_receive(void);
 extern bool check_link(void);
 
 #endif  /* !ENC28J60_H */

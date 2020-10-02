@@ -1,6 +1,7 @@
 #include <avr/io.h>
 #include <util/delay.h>
 #include <avr/pgmspace.h>
+#include <avr/interrupt.h>
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -18,6 +19,7 @@
 static struct enc28j60_dev {
     struct spi_device_s spi_dev;
     uint16_t next_packet_ptr;
+    void (*rx_handler)(uint8_t *buf, uint16_t size, uint8_t step);
 } enc28j60;
 
 static uint8_t rcr(uint8_t addr);
@@ -309,6 +311,35 @@ static uint16_t rand_acc_addr_calc(uint16_t addr, uint16_t offset) {
 }
 
 /*!
+ * @brief Enable chip to RX and TX, enable interrupts
+ */
+void enc28j60_enable(void) {
+    /* enable interrupt logic */
+
+    phy_write(ENC28J60_PHIR, 0);    // clear all PHY interrupt flags
+    phy_write(ENC28J60_PHIE, (_BV(PGEIE) | _BV(PLNKIE)));
+
+    wcr(ENC28J60_EIR, 0);   // clear all interrupt flags
+    bfs(ENC28J60_EIE, (_BV(INTIE) | _BV(PKTIE) | _BV(DMAIE) | _BV(LINKIE) |
+                       _BV(TXIE) | _BV(TXERIF) | _BV(RXERIE)));
+
+    /* enable receive */
+    bfs(ENC28J60_ECON1, _BV(RXEN));
+}
+
+/*!
+ * @brief Disable chip interrupts and packet reception
+ */
+void enc28j60_disable(void) {
+    // disable all interrupts
+    phy_write(ENC28J60_PHIE, 0);
+    wcr(ENC28J60_EIE, 0);
+    
+    // disable packet reception
+    bfc(ENC28J60_ECON1, _BV(RXEN));
+}
+
+/*!
  * @brief System reset command (soft reset)
  */
 void enc28j60_soft_reset(void) {
@@ -330,12 +361,15 @@ void enc28j60_soft_reset(void) {
  * @param intr_port Interrupt input signal port pointer
  * @param full_duplex \c true - Full-Duplex mode using;
  *                    \c false - Half-Duplex mode using
+ * @param rx_handler Function pointer of the RX packet handler
  */
 void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                    uint8_t rst_num, volatile uint8_t *rst_port,
                    uint8_t intr_num, volatile uint8_t * intr_port,
-                   bool full_duplex) {
+                   bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
     uint8_t oui[3];
+
+    enc28j60_disable();
 
     enc28j60.spi_dev.cs.pin_num = cs_num;
     enc28j60.spi_dev.cs.port = cs_port;
@@ -345,6 +379,7 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     enc28j60.spi_dev.intr.port = intr_port;
     enc28j60.spi_dev.a0.pin_num = 0;
     enc28j60.spi_dev.a0.port = NULL;
+    enc28j60.rx_handler = rx_handler;
     
     set_output(*(enc28j60.spi_dev.cs.port - 1), enc28j60.spi_dev.cs.pin_num);
     set_input(*(enc28j60.spi_dev.intr.port - 1), enc28j60.spi_dev.intr.pin_num);
@@ -456,6 +491,8 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     }
 
     printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
+
+    enc28j60_enable();
 }
 
 /*!
@@ -518,12 +555,8 @@ void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) 
     wcr(ENC28J60_ETXNDL, (uint8_t)end);
     wcr(ENC28J60_ETXNDH, (uint8_t)(end >> 8));
 
-    /* Clear EIR.TXIF, set EIE.TXIE and set EIE.INTIE
-        to enable an interrupt when done (if desired).
-     */
+    /* Clear EIR.TXIF. Needed? */
     bfc(ENC28J60_EIR, _BV(TXIF));
-    bfs(ENC28J60_EIE, _BV(TXIE));
-    // bfs(ENC28J60_EIE, _BV(INTIE));  // set EIE.INTIE to enable an interrupt when done (if desired).
 
     /* Start the transmission process */
     bfs(ENC28J60_ECON1, _BV(TXRTS));
@@ -531,26 +564,18 @@ void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) 
 
 /*!
  * @brief Receiving Packet
- * @param rx_handler Function pointer of the RX packet handler.
  */
-void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
+void enc28j60_packet_receive(void) {
     uint8_t rsv[ENC28J60_RSV_SIZE]; // receive status vector
     uint16_t next_packet_ptr, packet_len, rx_status, erxrdpt, size_tmp, offset;
     uint8_t *data, step_num;
-    /* ENABLING RECEPTION
-        1. If an interrupt is desired whenever a packet is received, set EIE.PKTIE and EIE.INTIE
-        2. If an interrupt is desired whenever a packet is dropped due
-            to insufficient buffer space, clear EIR.RXERIF and set both EIE.RXERIE and EIE.INTIE
-        3. Enable reception by setting ECON1.RXEN
-     */
-    bfs(ENC28J60_ECON1, _BV(RXEN));
 
     /* reading receive status vector */
     rbm(rsv, ENC28J60_RSV_SIZE, enc28j60.next_packet_ptr);
     next_packet_ptr = (rsv[1] << 8) | rsv[0];
     packet_len = (rsv[3] << 8) | rsv[2];
     rx_status = (rsv[5] << 8) | rsv[4];
-    /** TODO: check the package was received successfully */
+    
     if (!(rx_status & _BV(RSV_RX_OK)) || (packet_len > ENC28J60_MAX_FRAME_LEN)) {
         printf_P(PSTR("--- Receive Packet Error!  ---\n"));
         // error - CRC or Len Check
@@ -582,7 +607,7 @@ void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
                 break;
             }
             rbm(data, size_tmp, rand_acc_addr_calc(enc28j60.next_packet_ptr, offset));
-            rx_handler(data, size_tmp, step_num++);   // handling
+            enc28j60.rx_handler(data, size_tmp, step_num++);    // handling
             free(data);
             offset += size_tmp;
         }
@@ -602,11 +627,15 @@ void enc28j60_packet_receive(void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
  * @brief Get size of free space of RX buffer
  * @return Free space in the RX buffer
  */
-uint16_t enc28j60_get_rx_free_space(void) {
+int16_t enc28j60_get_rx_free_space(void) {
     uint8_t epktcnt;
-    uint16_t erxwrpt, erxrdpt, result;
+    uint16_t erxwrpt, erxrdpt, erxst, erxnd;
+    int16_t result;
 
     epktcnt = rcr(ENC28J60_EPKTCNT);
+    if (epktcnt >= 255)
+        return -1;
+    
     while (true) {
         erxwrpt = (uint16_t)rcr(ENC28J60_ERXWRPTL);
         erxwrpt |= (uint16_t)rcr(ENC28J60_ERXWRPTH) << 8;
@@ -617,10 +646,16 @@ uint16_t enc28j60_get_rx_free_space(void) {
     erxrdpt = (uint16_t)rcr(ENC28J60_ERXRDPTL);
     erxrdpt |= (uint16_t)rcr(ENC28J60_ERXRDPTH) << 8;
 
+    erxst = (uint16_t)rcr(ENC28J60_ERXSTL);
+    erxst |= (uint16_t)rcr(ENC28J60_ERXSTH) << 8;
+
+    erxnd = (uint16_t)rcr(ENC28J60_ERXNDL);
+    erxnd |= (uint16_t)rcr(ENC28J60_ERXNDH) << 8;
+
     if (erxwrpt > erxrdpt)
-        result = (ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT) - (erxwrpt - erxrdpt);
+        result = (erxnd - erxst) - (erxwrpt - erxrdpt);
     else if (erxwrpt == erxrdpt)
-        result = ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT;
+        result = erxnd - erxst;
     else
         result = erxrdpt - erxwrpt - 1;
 
@@ -633,4 +668,55 @@ uint16_t enc28j60_get_rx_free_space(void) {
  */
 bool check_link(void) {
     return (enc28j60_read_PHY(ENC28J60_PHSTAT2) & _BV(LSTAT)) >> LSTAT;
+}
+
+/*!
+ * @brief Interrupt Request Handler
+ */
+void enc28j60_irq_handler(void) {
+    uint8_t intrs;
+    bfc(ENC28J60_EIE, _BV(INTIE));  // disable interrupts
+
+    intrs = rcr(ENC28J60_EIR);
+
+    /* Receive Error Interrupt */
+    if (intrs & _BV(RXERIF)) {
+        if (enc28j60_get_rx_free_space() <= 0) {
+            printf_P(PSTR("RX overflow\n"));
+            // drop packet or process?
+        }
+        bfc(ENC28J60_EIR, RXERIF);
+    }
+
+    /* Transmit Error Interrupt */
+    if (intrs & _BV(TXERIF)) {
+        
+    }
+
+    /* TX Interrupt */
+    if (intrs & _BV(TXIF)) {
+        
+    }
+
+    /* Link Change Interrupt */
+    if (intrs & _BV(LINKIF)) {
+        printf_P(PSTR("Link is %S\n"), check_link() ? PSTR("Up") : PSTR("Down"));
+
+        /* read PHIR to clear LINKIF */
+        phy_read(ENC28J60_PHIR);
+    }
+
+    /* DMA Interrupt */
+    if (intrs & _BV(DMAIF)) {
+        
+    }
+
+    /* Receive Packet Pending Interrupt
+     * PKTIF is unreliable (Errate #6)
+     * check EPKTCNT
+     */
+    // if (intrs & _BV(PKTIF)) {
+    // }
+
+    bfs(ENC28J60_EIE, _BV(INTIE));  // enable interrupts
 }
