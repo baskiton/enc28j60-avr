@@ -346,23 +346,50 @@ enum PHLCON_bits {  // 0011_0100_0010_001x on reset
     LACFG3  // LEDA Configuration bit 3
 };
 
+/* Transmit Status Vector */
+typedef struct tsv_s {
+    uint16_t tx_byte_cnt : 16;   // Total bytes in frame not counting collided bytes
+    uint8_t tx_col_cnt : 4; // Number of collisions the current packet incurred during transmission attempts. It applies to successfully transmitted packets and as such, will not show the possible maximum count of 16 collisions.
+    uint8_t tx_crc_err : 1; // The attached CRC in the packet did not match the internally generated CRC.
+    uint8_t tx_len_chk_err : 1; // Indicates that frame length field value in the packet does not match the actual data byte length and is not a type field. MACON3.FRMLNEN must be set to get this error.
+    uint8_t tx_lenoor : 1;  // Indicates that frame type/length field was larger than 1500 bytes (type field).
+    uint8_t tx_done : 1;    // Transmission of the packet was completed.
+    uint8_t tx_multicast : 1;   // Packet’s destination address was a Multicast address.
+    uint8_t tx_broadcast : 1;   // Packet’s destination address was a Broadcast address.
+    uint8_t tx_pack_defer : 1;  // Packet was deferred for at least one attempt but less than an excessive defer.
+    uint8_t tx_exc_defer : 1;   // Packet was deferred in excess of 24,287 bit times (2.4287 ms).
+    uint8_t tx_exc_coll : 1;    // Packet was aborted after the number of collisions exceeded the retransmission maximum (MACLCON1).
+    uint8_t tx_late_coll : 1;   // Collision occurred beyond the collision window (MACLCON2).
+    uint8_t tx_giant : 1;   // Byte count for frame was greater than MAMXFL.
+    uint8_t tx_underrun : 1;    // Reserved. This bit will always be ‘0’.
+    uint16_t transm_bytes_tot : 16;  // Total bytes transmitted on the wire for the current packet, including all bytes from collided attempts.
+    uint8_t tx_ctrl_frame : 1;  // The frame transmitted was a control frame
+    uint8_t tx_pause_ctrl_frame : 1;    // The frame transmitted was a control frame with a valid pause opcode.
+    uint8_t backpress_appl : 1; //  Carrier sense method backpressure was previously applied.
+    uint8_t tx_vlan_frame : 1;  // Frame’s length/type field contained 8100h which is the VLAN protocol identifier.
+} tsv_t;
+
 /* Receive Status Vector */
-enum RSV_bits {
-    RSV_LONG_DROP_EVENTS,   //  Indicates a packet over 50,000 bit times occurred or that a packet was dropped since the last receive.
-    RSV_CARRIER_EVENT = 2U, // Indicates that at some time since the last receive, a carrier event was detected. The carrier event is not associated with this packet. A carrier event is activity on the receive channel that does not result in a packet receive attempt being made.
-    RSV_CRC_ERR = 4U,   // Indicates that frame CRC field value does not match the CRC calculated by the MAC.
-    RSV_LEN_CHECK_ERR,  // Indicates that frame length field value in the packet does not match the actual data byte length and specifies a valid length.
-    RSV_LEN_OOR,    //  Indicates that frame type/length field was larger than 1500 bytes (type field).
-    RSV_RX_OK,  // Indicates that at the packet had a valid CRC and no symbol errors.
-    RSV_RX_MULTICAST,   // Indicates packet received had a valid Multicast address.
-    RSV_RX_BROADCAST,   // Indicates packet received had a valid Broadcast address.
-    RSV_DRIBBLE_NIBBLE, // Indicates that after the end of this packet, an additional 1 to 7 bits were received. The extra bits were thrown away.
-    RSV_RX_CTRL_FRAME,  // Current frame was recognized as a control frame for having a valid type/length designating it as a control frame.
-    RSV_RX_PAUSE_CTRL_FRAME,    // Current frame was recognized as a control frame containing a valid pause frame opcode and a valid destination address.
-    RSV_RX_UNKN_OPC,    // Current frame was recognized as a control frame but it contained an unknown opcode.
-    RSV_RX_VLAN_TYPE,   // Current frame was recognized as a VLAN tagged frame.
-    RSV_ZERO    // always zero
-};
+typedef struct rsv_s {
+    uint16_t next_packet_ptr : 16;  // Pointer to the next packet
+    uint16_t rx_byte_cnt : 16;  // Indicates length of the received frame. This includes the destination address, source address, type/length, data, padding and CRC fields. This field is stored in little-endian format.
+    uint8_t rsv_long_drop_events : 1;   //  Indicates a packet over 50,000 bit times occurred or that a packet was dropped since the last receive.
+    uint8_t : 1;
+    uint8_t rsv_carrier_event : 1;  // Indicates that at some time since the last receive, a carrier event was detected. The carrier event is not associated with this packet. A carrier event is activity on the receive channel that does not result in a packet receive attempt being made.
+    uint8_t : 1;
+    uint8_t rsv_crc_err : 1;    // Indicates that frame CRC field value does not match the CRC calculated by the MAC.
+    uint8_t rsv_len_check_err : 1;  // Indicates that frame length field value in the packet does not match the actual data byte length and specifies a valid length.
+    uint8_t rsv_len_oor : 1;    // Indicates that frame type/length field was larger than 1500 bytes (type field).
+    uint8_t rsv_rx_ok : 1;  // Indicates that at the packet had a valid CRC and no symbol errors.
+    uint8_t rsv_rx_multicast : 1;   // Indicates packet received had a valid Multicast address.
+    uint8_t rsv_rx_broadcast : 1;   // Indicates packet received had a valid Broadcast address.
+    uint8_t rsv_dribble_nibble : 1; // Indicates that after the end of this packet, an additional 1 to 7 bits were received. The extra bits were thrown away.
+    uint8_t rsv_rx_ctrl_frame : 1;  // Current frame was recognized as a control frame for having a valid type/length designating it as a control frame.
+    uint8_t rsv_rx_pause_ctrl_frame : 1;    // Current frame was recognized as a control frame containing a valid pause frame opcode and a valid destination address.
+    uint8_t rsv_rx_unkn_opc : 1;    // Current frame was recognized as a control frame but it contained an unknown opcode.
+    uint8_t rsv_rx_vlan_type : 1;   // Current frame was recognized as a VLAN tagged frame.
+} rsv_t;
+
 
 extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                           uint8_t rst_num, volatile uint8_t *rst_port,

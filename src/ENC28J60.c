@@ -566,38 +566,34 @@ void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) 
  * @brief Receiving Packet
  */
 void enc28j60_packet_receive(void) {
-    uint8_t rsv[ENC28J60_RSV_SIZE]; // receive status vector
-    uint16_t next_packet_ptr, packet_len, rx_status, erxrdpt, size_tmp, offset;
+    rsv_t rsv;
+    uint16_t erxrdpt, size_tmp, offset;
     uint8_t *data, step_num;
 
     /* reading receive status vector */
-    rbm(rsv, ENC28J60_RSV_SIZE, enc28j60.next_packet_ptr);
-    next_packet_ptr = (rsv[1] << 8) | rsv[0];
-    packet_len = (rsv[3] << 8) | rsv[2];
-    rx_status = (rsv[5] << 8) | rsv[4];
+    rbm((uint8_t *)&rsv, ENC28J60_RSV_SIZE, enc28j60.next_packet_ptr);
     
-    if (!(rx_status & _BV(RSV_RX_OK)) || (packet_len > ENC28J60_MAX_FRAME_LEN)) {
+    if (!(rsv.rsv_rx_ok) || (rsv.rx_byte_cnt > ENC28J60_MAX_FRAME_LEN)) {
         printf_P(PSTR("--- Receive Packet Error!  ---\n"));
-        // error - CRC or Len Check
-        if (rx_status & _BV(RSV_CRC_ERR))
+        if (rsv.rsv_crc_err)
             printf_P(PSTR("--- --- CRC Error! --- --- ---\n"));
-        if (rx_status & _BV(RSV_LEN_CHECK_ERR))
+        if (rsv.rsv_len_check_err)
             printf_P(PSTR("--- --- Lenght Check Error! --\n"));
-        if (packet_len > ENC28J60_MAX_FRAME_LEN)
-            printf_P(PSTR("--- --- Max Lenght Error - %u\n"), packet_len);
-        next_packet_ptr = enc28j60.next_packet_ptr;
+        if (rsv.rx_byte_cnt > ENC28J60_MAX_FRAME_LEN)
+            printf_P(PSTR("--- --- Max Lenght Error - %u\n"), rsv.rx_byte_cnt);
+        rsv.next_packet_ptr = enc28j60.next_packet_ptr;
     } else {
         /* reading received packets */
         offset = ENC28J60_RSV_SIZE; // offset from the packet pointer
         step_num = 0;
-        while (packet_len) {
+        while (rsv.rx_byte_cnt) {
             // division into several steps with a maximum of 512 bytes
-            if (packet_len > 0x0200U) {
+            if (rsv.rx_byte_cnt > 0x0200U) {
                 size_tmp = 0x0200;
-                packet_len -= 0x0200;
+                rsv.rx_byte_cnt -= 0x0200;
             } else {
-                size_tmp = packet_len;
-                packet_len = 0;
+                size_tmp = rsv.rx_byte_cnt;
+                rsv.rx_byte_cnt = 0;
             }
             
             data = malloc(size_tmp);
@@ -614,13 +610,13 @@ void enc28j60_packet_receive(void) {
     }
 
     /* freeing receive buffer space */
-    erxrdpt = erxrdpt_workaround(next_packet_ptr, ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT);
+    erxrdpt = erxrdpt_workaround(rsv.next_packet_ptr, ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT);
     wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);
     wcr(ENC28J60_ERXRDPTH, (uint8_t)(erxrdpt >> 8));
 
     /** At this moment \a rand_acc_addr_calc(enc28j60.next_packet_ptr,offset)
      * must be equal to \a next_packet_ptr */
-    enc28j60.next_packet_ptr = next_packet_ptr;
+    enc28j60.next_packet_ptr = rsv.next_packet_ptr;
     bfs(ENC28J60_ECON2, _BV(PKTDEC));   // decrement packet count
 }
 
@@ -676,29 +672,42 @@ bool check_link(void) {
  */
 void enc28j60_irq_handler(void) {
     uint8_t intrs;
+    tsv_t tsv;
 
     bfc(ENC28J60_EIE, _BV(INTIE));  // disable interrupts
     printf_P(PSTR("\nInterrupt has occurred:\n"));
 
     intrs = rcr(ENC28J60_EIR);
 
-    /* Receive Error Interrupt */
+    /* Receive Error Interrupt
+     * RX buffer overflow condition or too many packets are in the RX buffer
+     * and more cannot be stored without overflowing the EPKTCNT register
+     */
     if (intrs & _BV(RXERIF)) {
         if (enc28j60_get_rx_free_space() <= 0) {
             printf_P(PSTR("    RX overflow\n"));
-            // drop packet or process?
+            // pass or process?
         }
-        bfc(ENC28J60_EIR, RXERIF);
+        bfc(ENC28J60_EIR, _BV(RXERIF));
+    }
+
+    /* TX Interrupt */
+    if ((intrs & _BV(TXIF)) && !(intrs & _BV(TXERIF))) {
+        if (rcr(ENC28J60_ESTAT) & _BV(TXABRT)) {
+            // abort
+        } else {
+            // transmit success
+        }
+        bfc(ENC28J60_EIR, _BV(TXIF));
     }
 
     /* Transmit Error Interrupt */
     if (intrs & _BV(TXERIF)) {
-        
-    }
+        rbm((uint8_t *)&tsv, ENC28J60_TSV_SIZE,
+            (((uint16_t)rcr(ENC28J60_ETXNDH) << 8) | (uint16_t)rcr(ENC28J60_ETXNDL) + 1));
+        // check tsv to search a problem
 
-    /* TX Interrupt */
-    if (intrs & _BV(TXIF)) {
-        
+        bfc(ENC28J60_EIR, (_BV(TXIF) | _BV(TXERIF)));
     }
 
     /* Link Change Interrupt */
@@ -711,6 +720,10 @@ void enc28j60_irq_handler(void) {
 
     /* DMA Interrupt */
     if (intrs & _BV(DMAIF)) {
+        /* DMA module has completed its memory copy or checksum calculation
+         * or the host controller cancels a DMA operation by
+         * manually clearing the DMAST bit
+         */
         bfc(ENC28J60_EIR, _BV(DMAIF));
     }
 
@@ -718,7 +731,7 @@ void enc28j60_irq_handler(void) {
      * PKTIF is unreliable (Errate #6)
      * check EPKTCNT
      */
-    if (intrs & _BV(PKTIF)) {
+    if (rcr(ENC28J60_EPKTCNT)) {
         printf_P(PSTR("    Packet receive\n"));
         enc28j60_packet_receive();
     }
