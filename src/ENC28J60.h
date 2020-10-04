@@ -21,20 +21,6 @@
 
 #include <defines.h>
 
-/*! TODO: Move to <defines.h> */
-struct avr_pin_s {
-    uint8_t pin_num;
-    volatile uint8_t *port;
-};
-
-/*! TODO: Move to <spi.h> */
-struct spi_device_s {
-    struct avr_pin_s cs;    // chip select
-    struct avr_pin_s rst;   // reset
-    struct avr_pin_s intr;  // interrupt
-    struct avr_pin_s a0;    // a0
-};
-
 
 #define MAC_ADDR_MAX_LEN 6U
 #define ENC28J60_TSV_SIZE 7U

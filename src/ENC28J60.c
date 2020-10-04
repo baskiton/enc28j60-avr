@@ -13,37 +13,18 @@
 
 #include "ENC28J60.h"
 
-#define ether_sel() (bit_clear(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
-#define ether_desel() (bit_set(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
-
 static struct enc28j60_dev {
     struct spi_device_s spi_dev;
     uint16_t next_packet_ptr;
     void (*rx_handler)(uint8_t *buf, uint16_t size, uint8_t step);
 } enc28j60;
 
+#define ether_sel() (bit_clear(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
+#define ether_desel() (bit_set(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
+
 static uint8_t rcr(uint8_t addr);
 static void wcr(uint8_t addr, uint8_t data);
 
-/*!
- * TODO: Move to <defines.h>
- * 
- * @brief Reversing bits on an octet.
- * Method attributed to Rich Schroeppel in the Programming Hacks section
- * http://www.inwap.com/pdp10/hbaker/hakmem/hakmem.html
- * http://www.inwap.com/pdp10/hbaker/hakmem/hacks.html#item167
- * 
- * @example:
- *   1 byte
- * ____________
- *  0110  0001
- *      ||
- *      \/
- *  1000  0110
- */
-static uint8_t bits_swap(uint8_t data) {
-    return (uint8_t)(((uint64_t)data * 0x0202020202U & 0x010884422010U) % 0x3ffU);
-}
 
 /*!
  * @brief Change the memory bank
@@ -367,9 +348,9 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                    uint8_t rst_num, volatile uint8_t *rst_port,
                    uint8_t intr_num, volatile uint8_t * intr_port,
                    bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
-    uint8_t oui[3];
-
-    enc28j60_disable();
+    uint8_t oui[3], revid, sreg;
+    sreg = SREG;
+    cli();
 
     enc28j60.spi_dev.cs.pin_num = cs_num;
     enc28j60.spi_dev.cs.port = cs_port;
@@ -381,10 +362,11 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     enc28j60.spi_dev.a0.port = NULL;
     enc28j60.rx_handler = rx_handler;
     
+    ether_desel();
     set_output(*(enc28j60.spi_dev.cs.port - 1), enc28j60.spi_dev.cs.pin_num);
     set_input(*(enc28j60.spi_dev.intr.port - 1), enc28j60.spi_dev.intr.pin_num);
     
-    spi_set_speed(ENC28J60_MAX_FREQ);
+    // spi_set_speed(ENC28J60_MAX_FREQ);
     
     /* Oscillator Start-up Timer (OST) - 300 us delay after power-up */
     _delay_us(300);
@@ -393,7 +375,7 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     enc28j60_soft_reset();
 
     /* INITIALIZATION */
-    uint8_t revid = rcr(ENC28J60_EREVID) & 0x1F;
+    revid = rcr(ENC28J60_EREVID) & 0x1F;
     if ((revid == 0x00) || (revid == 0xFFU)) {
         printf_P(PSTR("enc28j60_init() - Invalid REVID %d\n"), revid);
         return;
@@ -418,6 +400,8 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
        PHY registers.
      */
     while (!(rcr(ENC28J60_ESTAT) & _BV(CLKRDY))) {}
+
+    enc28j60_disable();
     
     /* MAC Initialization Settings
         1. Set the MARXEN bit in MACON1 to enable the MAC to receive frames.
@@ -493,6 +477,8 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
 
     enc28j60_enable();
+    
+    SREG = sreg;
 }
 
 /*!
@@ -505,15 +491,6 @@ uint8_t enc28j60_read_rev_id(void) {
     result = rcr(ENC28J60_EREVID) & 0x1F;
 
     return result;
-}
-
-/*!
- * @brief Get PHY register value
- * @param reg PHY register address
- * @return 16-bit data
- */
-uint16_t enc28j60_read_PHY(uint8_t reg) {
-    return phy_read(reg);
 }
 
 /*!
@@ -664,7 +641,7 @@ int16_t enc28j60_get_rx_free_space(void) {
  * @return True if Link Up; False otherwise
  */
 bool check_link(void) {
-    return (enc28j60_read_PHY(ENC28J60_PHSTAT2) & _BV(LSTAT)) >> LSTAT;
+    return (phy_read(ENC28J60_PHSTAT2) & _BV(LSTAT)) >> LSTAT;
 }
 
 /*!
@@ -675,7 +652,6 @@ void enc28j60_irq_handler(void) {
     tsv_t tsv;
 
     bfc(ENC28J60_EIE, _BV(INTIE));  // disable interrupts
-    printf_P(PSTR("\nInterrupt has occurred:\n"));
 
     intrs = rcr(ENC28J60_EIR);
 
@@ -704,7 +680,7 @@ void enc28j60_irq_handler(void) {
     /* Transmit Error Interrupt */
     if (intrs & _BV(TXERIF)) {
         rbm((uint8_t *)&tsv, ENC28J60_TSV_SIZE,
-            (((uint16_t)rcr(ENC28J60_ETXNDH) << 8) | (uint16_t)rcr(ENC28J60_ETXNDL) + 1));
+            (((uint16_t)rcr(ENC28J60_ETXNDH) << 8) | (uint16_t)(rcr(ENC28J60_ETXNDL) + 1)));
         // check tsv to search a problem
 
         bfc(ENC28J60_EIR, (_BV(TXIF) | _BV(TXERIF)));
