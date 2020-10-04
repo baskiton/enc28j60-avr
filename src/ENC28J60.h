@@ -1,6 +1,7 @@
 /*
     Library for ENC28J60 - Stand-Alone Ethernet Controller with SPI Interface.
     Datasheet: http://ww1.microchip.com/downloads/en/DeviceDoc/39662e.pdf
+    ERRATA: http://ww1.microchip.com/downloads/en/DeviceDoc/80349c.pdf
 
     Connection example for arduino nano:
         ETHER   NANO
@@ -20,95 +21,77 @@
 
 #include <defines.h>
 
-/*! TODO: Move to <defines.h> */
-struct avr_pin {
-    uint8_t pin_num;
-    volatile uint8_t *port;
-};
 
-typedef struct eth_controls {
-    struct avr_pin cs;
-    struct avr_pin rst;
-    struct avr_pin intr;
-} eth_pins;
+#define MAC_ADDR_MAX_LEN 6U
+#define ENC28J60_TSV_SIZE 7U
+#define ENC28J60_RSV_SIZE 6U
+#define ENC28J60_MAX_FREQ 20000000U
+#define ENC28J60_MAX_FRAME_LEN 1518U
 
-union mac_u {
-  uint64_t mac_64;
-  struct {
-    uint8_t mac_6;
-    uint8_t mac_5;
-    uint8_t mac_4;
-    uint8_t mac_3;
-    uint8_t mac_2;
-    uint8_t mac_1;
-  } mac_s;
-};
+/* TX buffer pointers to internal 8K RAM.
+ * there is enough space for one ethernet frame.
+ */
+#define ENC28J60_TXSTART_INIT 0x1A00U
+#define ENC28J60_TXEND_INIT 0x1FFFU
 
-#define ETHER_FREQ 20000000U
-#define ETHER_MAX_FRAME_LEN 1518U
+/* RX buffer pointer to internal 8K RAM.
+ * RX buffer must start at 0 (by ERRATA issue #5)
+ */
+#define ENC28J60_RXSTART_INIT 0x0000U
+#define ENC28J60_RXEND_INIT 0x19FFU
 
-/* Control registers */
-enum CR_COMMON {    // Common control registers (for all banks)
-    ENC28J60_EIE = 0x1BU,   // INTIE    PKTIE   DMAIE   LINKIE  TXIE    r       TXERIE  RXERIE
-    ENC28J60_EIR,           // —        PKTIF   DMAIF   LINKIF  TXIF    r       TXERIF  RXERIF
-    ENC28J60_ESTAT,         // INT      BUFER   r       LATECOL —       RXBUSY  TXABRT  CLKRDY
-    ENC28J60_ECON2,         // AUTOINC  PKTDEC  PWRSV   r       VRPS    —       —       —
-    ENC28J60_ECON1          // TXRST    RXRST   DMAST   CSUMEN  TXRTS   RXEN    BSEL1   BSEL0
-};
+/* SPI INSTRUCTION SET FOR THE ENC28J60 */
+#define ENC28J60_RCR_OP 0U                      // read control register opcode
+#define ENC28J60_RBM_OP ((1U << 5U) | 0b11010U) // read buffer memory opcode
+#define ENC28J60_WCR_OP (2U << 5U)              // write control register opcode
+#define ENC28J60_WBM_OP ((3U << 5U) | 0b11010U) // write buffer memory opcode
+#define ENC28J60_BFS_OP (4U << 5U)              // bit field set opcode
+#define ENC28J60_BFC_OP (5U << 5U)              // bit field clear opcode
+#define ENC28J60_SRC_OP ((7U << 5U) | 0b11111U) // system reset command opcode (soft reset)
 
-enum CR_BANK_0 {    // for bank 0
-    ENC28J60_ERDPTL,    // Read Pointer Low Byte (ERDPT<7:0>)
-    ENC28J60_ERDPTH,    // Read Pointer High Byte (ERDPT<12:8>)
-    ENC28J60_EWRPTL,    // Write Pointer Low Byte (EWRPT<7:0>)
-    ENC28J60_EWRPTH,    // Write Pointer High Byte (EWRPT<12:8>)
-    ENC28J60_ETXSTL,    // TX Start Low Byte (ETXST<7:0>)
-    ENC28J60_ETXSTH,    // TX Start High Byte (ETXST<12:8>)
-    ENC28J60_ETXNDL,    // TX End Low Byte (ETXND<7:0>)
-    ENC28J60_ETXNDH,    // TX End High Byte (ETXND<12:8>)
-    ENC28J60_ERXSTL,    // RX Start Low Byte (ERXST<7:0>)
-    ENC28J60_ERXSTH,    // RX Start High Byte (ERXST<12:8>)
-    ENC28J60_ERXNDL,    //  RX End Low Byte (ERXND<7:0>)
-    ENC28J60_ERXNDH,    // RX End High Byte (ERXND<12:8>)
-    ENC28J60_ERXRDPTL,  // RX RD Pointer Low Byte (ERXRDPT<7:0>)
-    ENC28J60_ERXRDPTH,  // RX RD Pointer High Byte (ERXRDPT<12:8>)
-    ENC28J60_ERXWRPTL,  // RX WR Pointer Low Byte (ERXWRPT<7:0>)
-    ENC28J60_ERXWRPTH,  // RX WR Pointer High Byte (ERXWRPT<12:8>)
-    ENC28J60_EDMASTL,   // DMA Start Low Byte (EDMAST<7:0>)
-    ENC28J60_EDMASTH,   // DMA Start High Byte (EDMAST<12:8>)
-    ENC28J60_EDMANDL,   // DMA End Low Byte (EDMAND<7:0>)
-    ENC28J60_EDMANDH,   // DMA End High Byte (EDMAND<12:8>)
-    ENC28J60_EDMADSTL,  // DMA Destination Low Byte (EDMADST<7:0>)
-    ENC28J60_EDMADSTH,  // DMA Destination High Byte (EDMADST<12:8>)
-    ENC28J60_EDMACSL,   // DMA Checksum Low Byte (EDMACS<7:0>)
-    ENC28J60_EDMACSH    // DMA Checksum High Byte (EDMACS<15:8>)
-};
+/* 
+ * ENC28J60 Control registers
+ *      register address    (bits 0-4)
+ *      bank number         (bits 5-6)
+ *      MAC/MII register    (bit 7)
+ */
+#define ENC28J60_ADDR_MASK 0x1FU
+#define ENC28J60_BANK_MASK 0x60U
+#define ENC28J60_DUMMY_MASK 0x80U
+
+/* Common control registers (for all banks) */
+#define ENC28J60_EIE    0x1B    // INTIE    PKTIE   DMAIE   LINKIE  TXIE    r       TXERIE  RXERIE
+#define ENC28J60_EIR    0x1C    // —        PKTIF   DMAIF   LINKIF  TXIF    r       TXERIF  RXERIF
+#define ENC28J60_ESTAT  0x1D    // INT      BUFER   r       LATECOL —       RXBUSY  TXABRT  CLKRDY
+#define ENC28J60_ECON2  0x1E    // AUTOINC  PKTDEC  PWRSV   r       VRPS    —       —       —
+#define ENC28J60_ECON1  0x1F    // TXRST    RXRST   DMAST   CSUMEN  TXRTS   RXEN    BSEL1   BSEL0
 
 enum EIE_bits {     // 0000_0000 on reset
-    RXERIE,
-    TXERIE,
-    TXIE = 3U,
-    LINKIE,
-    DMAIE,
-    PKTIE,
-    INTIE
+    RXERIE, // Receive Error Interrupt Enable bit
+    TXERIE, // Transmit Error Interrupt Enable bit
+    TXIE = 3U,  // Transmit Interrupt Enable bit
+    LINKIE, // Link Status Change Interrupt Enable bit
+    DMAIE,  // DMA Interrupt Enable bit
+    PKTIE,  // Receive Packet Pending Interrupt Enable bit
+    INTIE   // Global INT Interrupt Enable bit
 };
 
 enum EIR_bits {     // -000_0000 on reset
-    RXERIF,
-    TXERIF,
-    TXIF = 3U,
-    LINKIF,
-    DMAIF,
-    PKTIF
+    RXERIF, // Receive Error Interrupt Flag bit
+    TXERIF, // Transmit Error Interrupt Flag bit
+    TXIF = 3U,  // Transmit Interrupt Flag bit
+    LINKIF, // Link Change Interrupt Flag bit
+    DMAIF,  // DMA Interrupt Flag bit
+    PKTIF   // Receive Packet Pending Interrupt Flag bit
 };
 
 enum ESTAT_bits {   // 0000_-000 on reset
-    CLKRDY,
-    TXABRT,
-    RXBUSY,
-    LATECOL = 4U,
-    BUFER = 6U,
-    INT
+    CLKRDY,         // Clock Ready bit
+    TXABRT,         // Transmit Abort Error bit
+    RXBUSY,         // Receive Busy bit
+    LATECOL = 4U,   // Late Collision Error bit
+    BUFER = 6U,     // Ethernet Buffer Error Status bit
+    INT             // INT Interrupt Flag bit
 };
 
 enum ECON2_bits {   // 1000_0--- on reset
@@ -129,30 +112,55 @@ enum ECON1_bits {   // 0000_0000 on reset
     TXRST   // Transmit Logic Reset bit
 };
 
-enum CR_BANK_1 {    // for bank 1
-    ENC28J60_EHT0,      // Hash Table Byte 0 (EHT<7:0>)
-    ENC28J60_EHT1,      // Hash Table Byte 1 (EHT<15:8>)
-    ENC28J60_EHT2,      // Hash Table Byte 2 (EHT<23:16>)
-    ENC28J60_EHT3,      // Hash Table Byte 3 (EHT<31:24>)
-    ENC28J60_EHT4,      // Hash Table Byte 4 (EHT<39:32>)
-    ENC28J60_EHT5,      // Hash Table Byte 5 (EHT<47:40>)
-    ENC28J60_EHT6,      // Hash Table Byte 6 (EHT<55:48>)
-    ENC28J60_EHT7,      // Hash Table Byte 7 (EHT<63:56>)
-    ENC28J60_EPMM0,     // Pattern Match Mask Byte 0 (EPMM<7:0>)
-    ENC28J60_EPMM1,     // Pattern Match Mask Byte 1 (EPMM<15:8>)
-    ENC28J60_EPMM2,     // Pattern Match Mask Byte 2 (EPMM<23:16>)
-    ENC28J60_EPMM3,     // Pattern Match Mask Byte 3 (EPMM<31:24>)
-    ENC28J60_EPMM4,     // Pattern Match Mask Byte 4 (EPMM<39:32>)
-    ENC28J60_EPMM5,     // Pattern Match Mask Byte 5 (EPMM<47:40>)
-    ENC28J60_EPMM6,     // Pattern Match Mask Byte 6 (EPMM<55:48>)
-    ENC28J60_EPMM7,     // Pattern Match Mask Byte 7 (EPMM<63:56>)
-    ENC28J60_EPMCSL,    // Pattern Match Checksum Low Byte (EPMCS<7:0>)
-    ENC28J60_EPMCSH,    // Pattern Match Checksum High Byte (EPMCS<15:0>)
-    ENC28J60_EPMOL = 0x14U,     // Pattern Match Offset Low Byte (EPMO<7:0>)
-    ENC28J60_EPMOH,     //  Pattern Match Offset High Byte (EPMO<12:8>)
-    ENC28J60_ERXFCON = 0x18U,   // UCEN     ANDOR   CRCEN   PMEN    MPEN    HTEN    MCEN    BCEN
-    ENC28J60_EPKTCNT    // Ethernet Packet Count
-};
+/* Bank 0                   DUMMY | BANK | ADDR */
+#define ENC28J60_ERDPTL     (0x00 | 0x00 | 0x00)    // Read Pointer Low Byte (ERDPT<7:0>)
+#define ENC28J60_ERDPTH     (0x00 | 0x00 | 0x01)    // Read Pointer High Byte (ERDPT<12:8>)
+#define ENC28J60_EWRPTL     (0x00 | 0x00 | 0x02)    // Write Pointer Low Byte (EWRPT<7:0>)
+#define ENC28J60_EWRPTH     (0x00 | 0x00 | 0x03)    // Write Pointer High Byte (EWRPT<12:8>)
+#define ENC28J60_ETXSTL     (0x00 | 0x00 | 0x04)    // TX Start Low Byte (ETXST<7:0>)
+#define ENC28J60_ETXSTH     (0x00 | 0x00 | 0x05)    // TX Start High Byte (ETXST<12:8>)
+#define ENC28J60_ETXNDL     (0x00 | 0x00 | 0x06)    // TX End Low Byte (ETXND<7:0>)
+#define ENC28J60_ETXNDH     (0x00 | 0x00 | 0x07)    // TX End High Byte (ETXND<12:8>)
+#define ENC28J60_ERXSTL     (0x00 | 0x00 | 0x08)    // RX Start Low Byte (ERXST<7:0>)
+#define ENC28J60_ERXSTH     (0x00 | 0x00 | 0x09)    // RX Start High Byte (ERXST<12:8>)
+#define ENC28J60_ERXNDL     (0x00 | 0x00 | 0x0A)    //  RX End Low Byte (ERXND<7:0>)
+#define ENC28J60_ERXNDH     (0x00 | 0x00 | 0x0B)    // RX End High Byte (ERXND<12:8>)
+#define ENC28J60_ERXRDPTL   (0x00 | 0x00 | 0x0C)    // RX RD Pointer Low Byte (ERXRDPT<7:0>)
+#define ENC28J60_ERXRDPTH   (0x00 | 0x00 | 0x0D)    // RX RD Pointer High Byte (ERXRDPT<12:8>)
+#define ENC28J60_ERXWRPTL   (0x00 | 0x00 | 0x0E)    // RX WR Pointer Low Byte (ERXWRPT<7:0>)
+#define ENC28J60_ERXWRPTH   (0x00 | 0x00 | 0x0F)    // RX WR Pointer High Byte (ERXWRPT<12:8>)
+#define ENC28J60_EDMASTL    (0x00 | 0x00 | 0x10)    // DMA Start Low Byte (EDMAST<7:0>)
+#define ENC28J60_EDMASTH    (0x00 | 0x00 | 0x11)    // DMA Start High Byte (EDMAST<12:8>)
+#define ENC28J60_EDMANDL    (0x00 | 0x00 | 0x12)    // DMA End Low Byte (EDMAND<7:0>)
+#define ENC28J60_EDMANDH    (0x00 | 0x00 | 0x13)    // DMA End High Byte (EDMAND<12:8>)
+#define ENC28J60_EDMADSTL   (0x00 | 0x00 | 0x14)    // DMA Destination Low Byte (EDMADST<7:0>)
+#define ENC28J60_EDMADSTH   (0x00 | 0x00 | 0x15)    // DMA Destination High Byte (EDMADST<12:8>)
+#define ENC28J60_EDMACSL    (0x00 | 0x00 | 0x16)    // DMA Checksum Low Byte (EDMACS<7:0>)
+#define ENC28J60_EDMACSH    (0x00 | 0x00 | 0x17)    // DMA Checksum High Byte (EDMACS<15:8>)
+
+/* Bank 1                   DUMMY | BANK | ADDR */
+#define ENC28J60_EHT0       (0x00 | 0x20 | 0x00)    // Hash Table Byte 0 (EHT<7:0>)
+#define ENC28J60_EHT1       (0x00 | 0x20 | 0x01)    // Hash Table Byte 1 (EHT<15:8>)
+#define ENC28J60_EHT2       (0x00 | 0x20 | 0x02)    // Hash Table Byte 2 (EHT<23:16>)
+#define ENC28J60_EHT3       (0x00 | 0x20 | 0x03)    // Hash Table Byte 3 (EHT<31:24>)
+#define ENC28J60_EHT4       (0x00 | 0x20 | 0x04)    // Hash Table Byte 4 (EHT<39:32>)
+#define ENC28J60_EHT5       (0x00 | 0x20 | 0x05)    // Hash Table Byte 5 (EHT<47:40>)
+#define ENC28J60_EHT6       (0x00 | 0x20 | 0x06)    // Hash Table Byte 6 (EHT<55:48>)
+#define ENC28J60_EHT7       (0x00 | 0x20 | 0x07)    // Hash Table Byte 7 (EHT<63:56>)
+#define ENC28J60_EPMM0      (0x00 | 0x20 | 0x08)    // Pattern Match Mask Byte 0 (EPMM<7:0>)
+#define ENC28J60_EPMM1      (0x00 | 0x20 | 0x09)    // Pattern Match Mask Byte 1 (EPMM<15:8>)
+#define ENC28J60_EPMM2      (0x00 | 0x20 | 0x0A)    // Pattern Match Mask Byte 2 (EPMM<23:16>)
+#define ENC28J60_EPMM3      (0x00 | 0x20 | 0x0B)    // Pattern Match Mask Byte 3 (EPMM<31:24>)
+#define ENC28J60_EPMM4      (0x00 | 0x20 | 0x0C)    // Pattern Match Mask Byte 4 (EPMM<39:32>)
+#define ENC28J60_EPMM5      (0x00 | 0x20 | 0x0D)    // Pattern Match Mask Byte 5 (EPMM<47:40>)
+#define ENC28J60_EPMM6      (0x00 | 0x20 | 0x0E)    // Pattern Match Mask Byte 6 (EPMM<55:48>)
+#define ENC28J60_EPMM7      (0x00 | 0x20 | 0x0F)    // Pattern Match Mask Byte 7 (EPMM<63:56>)
+#define ENC28J60_EPMCSL     (0x00 | 0x20 | 0x10)    // Pattern Match Checksum Low Byte (EPMCS<7:0>)
+#define ENC28J60_EPMCSH     (0x00 | 0x20 | 0x11)    // Pattern Match Checksum High Byte (EPMCS<15:0>)
+#define ENC28J60_EPMOL      (0x00 | 0x20 | 0x14)    // Pattern Match Offset Low Byte (EPMO<7:0>)
+#define ENC28J60_EPMOH      (0x00 | 0x20 | 0x15)    // Pattern Match Offset High Byte (EPMO<12:8>)
+#define ENC28J60_ERXFCON    (0x00 | 0x20 | 0x18)    // UCEN ANDOR CRCEN PMEN MPEN HTEN MCEN BCEN
+#define ENC28J60_EPKTCNT    (0x00 | 0x20 | 0x19)    // Ethernet Packet Count
 
 enum ERXFCON_bits {     // 1010_0001 on reset
     BCEN,   // Broadcast Filter Enable bit
@@ -165,24 +173,23 @@ enum ERXFCON_bits {     // 1010_0001 on reset
     UCEN    // Unicast Filter Enable bit
 };
 
-enum CR_BANK_2 {    // for bank 2
-    ENC28J60_MACON1,    // —        —       —       r       TXPAUS  RXPAUS  PASSALL MARXEN
-    ENC28J60_MACON3 = 0x02U,    // PADCFG2  PADCFG1 PADCFG0 TXCRCEN PHDREN  HFRMEN  FRMLNEN FULDPX 
-    ENC28J60_MACON4,    // —        DEFER   BPEN    NOBKOFF —       —       r       r 
-    ENC28J60_MABBIPG,   // Back-to-Back Inter-Packet Gap (BBIPG<6:0>)
-    ENC28J60_MAIPGL = 0x06U,    // Non-Back-to-Back Inter-Packet Gap Low Byte (MAIPGL<6:0>)
-    ENC28J60_MAIPGH,            // Non-Back-to-Back Inter-Packet Gap High Byte (MAIPGH<6:0>)
-    ENC28J60_MACLCON1,  // Retransmission Maximum (RETMAX<3:0>)
-    ENC28J60_MACLCON2,  // Collision Window (COLWIN<5:0>)
-    ENC28J60_MAMXFLL,   // Maximum Frame Length Low Byte (MAMXFL<7:0>)
-    ENC28J60_MAMXFLH,   //  Maximum Frame Length High Byte (MAMXFL<15:8>)
-    ENC28J60_MICMD = 0x12U,     // — — — — — — MIISCAN MIIRD
-    ENC28J60_MIREGADR = 0x14U,  //  MII Register Address (MIREGADR<4:0>)
-    ENC28J60_MIWRL = 0x16U, //  MII Write Data Low Byte (MIWR<7:0>)
-    ENC28J60_MIWRH,         //  MII Write Data High Byte (MIWR<15:8>)
-    ENC28J60_MIRDL,     // MII Read Data Low Byte (MIRD<7:0>)
-    ENC28J60_MIRDH,     //  MII Read Data High Byte(MIRD<15:8>)
-};
+/* Bank 2                                  DUMMY | BANK | ADDR */
+#define ENC28J60_MACON1     (ENC28J60_DUMMY_MASK | 0x40 | 0x00) // — — — r TXPAUS RXPAUS PASSALL MARXEN
+#define ENC28J60_MACON3     (ENC28J60_DUMMY_MASK | 0x40 | 0x02) // PADCFG2 PADCFG1 PADCFG0 TXCRCEN PHDREN HFRMEN FRMLNEN FULDPX
+#define ENC28J60_MACON4     (ENC28J60_DUMMY_MASK | 0x40 | 0x03) // — DEFER BPEN NOBKOFF — — r r
+#define ENC28J60_MABBIPG    (ENC28J60_DUMMY_MASK | 0x40 | 0x04) // Back-to-Back Inter-Packet Gap (BBIPG<6:0>)
+#define ENC28J60_MAIPGL     (ENC28J60_DUMMY_MASK | 0x40 | 0x06) // Non-Back-to-Back Inter-Packet Gap Low Byte (MAIPGL<6:0>)
+#define ENC28J60_MAIPGH     (ENC28J60_DUMMY_MASK | 0x40 | 0x07) // Non-Back-to-Back Inter-Packet Gap High Byte (MAIPGH<6:0>)
+#define ENC28J60_MACLCON1   (ENC28J60_DUMMY_MASK | 0x40 | 0x08) // Retransmission Maximum (RETMAX<3:0>)
+#define ENC28J60_MACLCON2   (ENC28J60_DUMMY_MASK | 0x40 | 0x09) // Collision Window (COLWIN<5:0>)
+#define ENC28J60_MAMXFLL    (ENC28J60_DUMMY_MASK | 0x40 | 0x0A) // Maximum Frame Length Low Byte (MAMXFL<7:0>)
+#define ENC28J60_MAMXFLH    (ENC28J60_DUMMY_MASK | 0x40 | 0x0B) // Maximum Frame Length High Byte (MAMXFL<15:8>)
+#define ENC28J60_MICMD      (ENC28J60_DUMMY_MASK | 0x40 | 0x12) // — — — — — — MIISCAN MIIRD
+#define ENC28J60_MIREGADR   (ENC28J60_DUMMY_MASK | 0x40 | 0x14) // MII Register Address (MIREGADR<4:0>)
+#define ENC28J60_MIWRL      (ENC28J60_DUMMY_MASK | 0x40 | 0x16) // MII Write Data Low Byte (MIWR<7:0>)
+#define ENC28J60_MIWRH      (ENC28J60_DUMMY_MASK | 0x40 | 0x17) // MII Write Data High Byte (MIWR<15:8>)
+#define ENC28J60_MIRDL      (ENC28J60_DUMMY_MASK | 0x40 | 0x18) // MII Read Data Low Byte (MIRD<7:0>)
+#define ENC28J60_MIRDH      (ENC28J60_DUMMY_MASK | 0x40 | 0x19) // MII Read Data High Byte(MIRD<15:8>)
 
 enum MACON1_bits {      // ---0_0000 on reset
     MARXEN,     // MAC Receive Enable bit
@@ -213,24 +220,23 @@ enum MICMD_bits {       // ----_--00 on reset
     MIISCAN     // MII Scan Enable bit
 };
 
-enum CR_BANK_3 {    // for bank 3
-    ENC28J60_MAADR5,    // MAC Address Byte 5 (MAADR<15:8>)
-    ENC28J60_MAADR6,    // MAC Address Byte 6 (MAADR<7:0>)
-    ENC28J60_MAADR3,    // MAC Address Byte 3 (MAADR<31:24>), OUI Byte 3
-    ENC28J60_MAADR4,    // MAC Address Byte 4 (MAADR<23:16>)
-    ENC28J60_MAADR1,    // MAC Address Byte 1 (MAADR<47:40>), OUI Byte 1
-    ENC28J60_MAADR2,    // MAC Address Byte 2 (MAADR<39:32>), OUI Byte 2
-    ENC28J60_EBSTSD,    // Built-in Self-Test Fill Seed (EBSTSD<7:0>)
-    ENC28J60_EBSTCON,   // PSV2     PSV1    PSV0    PSEL    TMSEL1  TMSEL0  TME     BISTST
-    ENC28J60_EBSTCSL,   // Built-in Self-Test Checksum Low Byte (EBSTCS<7:0>)
-    ENC28J60_EBSTCSH,   // Built-in Self-Test Checksum High Byte (EBSTCS<15:8>)
-    ENC28J60_MISTAT,    // — — — — r NVALID SCAN BUSY
-    ENC28J60_EREVID = 0x12U,    // Ethernet Revision ID (EREVID<4:0>) - READ ONLY REGISTER!!!
-    ENC28J60_ECOCON = 0x15U,    // — — — — — COCON2 COCON1 COCON0
-    ENC28J60_EFLOCON = 0x17U,   // — — — — — FULDPXS FCEN1 FCEN0
-    ENC28J60_EPAUSL,    // Pause Timer Value Low Byte (EPAUS<7:0>)
-    ENC28J60_EPAUSH     // Pause Timer Value High Byte (EPAUS<15:8>)
-};
+/* Bank 3                                  DUMMY | BANK | ADDR */
+#define ENC28J60_MAADR5     (ENC28J60_DUMMY_MASK | 0x60 | 0x00) // MAC Address Byte 5 (MAADR<15:8>)
+#define ENC28J60_MAADR6     (ENC28J60_DUMMY_MASK | 0x60 | 0x01) // MAC Address Byte 6 (MAADR<7:0>)
+#define ENC28J60_MAADR3     (ENC28J60_DUMMY_MASK | 0x60 | 0x02) // MAC Address Byte 3 (MAADR<31:24>), OUI Byte 3
+#define ENC28J60_MAADR4     (ENC28J60_DUMMY_MASK | 0x60 | 0x03) // MAC Address Byte 4 (MAADR<23:16>)
+#define ENC28J60_MAADR1     (ENC28J60_DUMMY_MASK | 0x60 | 0x04) // MAC Address Byte 1 (MAADR<47:40>), OUI Byte 1
+#define ENC28J60_MAADR2     (ENC28J60_DUMMY_MASK | 0x60 | 0x05) // MAC Address Byte 2 (MAADR<39:32>), OUI Byte 2
+#define ENC28J60_EBSTSD     (0x00                | 0x60 | 0x06) // Built-in Self-Test Fill Seed (EBSTSD<7:0>)
+#define ENC28J60_EBSTCON    (0x00                | 0x60 | 0x07) // PSV2 PSV1 PSV0 PSEL TMSEL1 TMSEL0 TME BISTST
+#define ENC28J60_EBSTCSL    (0x00                | 0x60 | 0x08) // Built-in Self-Test Checksum Low Byte (EBSTCS<7:0>)
+#define ENC28J60_EBSTCSH    (0x00                | 0x60 | 0x09) // Built-in Self-Test Checksum High Byte (EBSTCS<15:8>)
+#define ENC28J60_MISTAT     (ENC28J60_DUMMY_MASK | 0x60 | 0x0A) // — — — — r NVALID SCAN BUSY
+#define ENC28J60_EREVID     (0x00                | 0x60 | 0x12) // Ethernet Revision ID (EREVID<4:0>) - READ ONLY REGISTER!!!
+#define ENC28J60_ECOCON     (0x00                | 0x60 | 0x15) // — — — — — COCON2 COCON1 COCON0
+#define ENC28J60_EFLOCON    (0x00                | 0x60 | 0x17) // — — — — — FULDPXS FCEN1 FCEN0
+#define ENC28J60_EPAUSL     (0x00                | 0x60 | 0x18) // Pause Timer Value Low Byte (EPAUS<7:0>)
+#define ENC28J60_EPAUSH     (0x00                | 0x60 | 0x19) // Pause Timer Value High Byte (EPAUS<15:8>)
 
 enum EBSTCON_bits {     // 0000_0000 on reset
     BISTST, // Built-in Self-Test Start/Busy bit
@@ -261,17 +267,16 @@ enum EFLOCON_bits {     // ----_-000 on reset
     FULDPXS
 };
 
-enum PHY_REGS {
-    ENC28J60_PHCON1,
-    ENC28J60_PHSTAT1,
-    ENC28J60_PHID1,
-    ENC28J60_PHID2,
-    ENC28J60_PHCON2 = 0x10,
-    ENC28J60_PHSTAT2,
-    ENC28J60_PHIE,
-    ENC28J60_PHIR,
-    ENC28J60_PHLCON,
-};
+/* PHY registers */
+#define ENC28J60_PHCON1     0x00
+#define ENC28J60_PHSTAT1    0x01
+#define ENC28J60_PHID1      0x02
+#define ENC28J60_PHID2      0x03
+#define ENC28J60_PHCON2     0x10
+#define ENC28J60_PHSTAT2    0x11
+#define ENC28J60_PHIE       0x12
+#define ENC28J60_PHIR       0x13
+#define ENC28J60_PHLCON     0x14
 
 enum PHCON1_bits {  // 00--_00-q_0---_---- on reset
     PDPXMD = 8U,    // PHY Duplex Mode bit
@@ -327,14 +332,63 @@ enum PHLCON_bits {  // 0011_0100_0010_001x on reset
     LACFG3  // LEDA Configuration bit 3
 };
 
+/* Transmit Status Vector */
+typedef struct tsv_s {
+    uint16_t tx_byte_cnt : 16;   // Total bytes in frame not counting collided bytes
+    uint8_t tx_col_cnt : 4; // Number of collisions the current packet incurred during transmission attempts. It applies to successfully transmitted packets and as such, will not show the possible maximum count of 16 collisions.
+    uint8_t tx_crc_err : 1; // The attached CRC in the packet did not match the internally generated CRC.
+    uint8_t tx_len_chk_err : 1; // Indicates that frame length field value in the packet does not match the actual data byte length and is not a type field. MACON3.FRMLNEN must be set to get this error.
+    uint8_t tx_lenoor : 1;  // Indicates that frame type/length field was larger than 1500 bytes (type field).
+    uint8_t tx_done : 1;    // Transmission of the packet was completed.
+    uint8_t tx_multicast : 1;   // Packet’s destination address was a Multicast address.
+    uint8_t tx_broadcast : 1;   // Packet’s destination address was a Broadcast address.
+    uint8_t tx_pack_defer : 1;  // Packet was deferred for at least one attempt but less than an excessive defer.
+    uint8_t tx_exc_defer : 1;   // Packet was deferred in excess of 24,287 bit times (2.4287 ms).
+    uint8_t tx_exc_coll : 1;    // Packet was aborted after the number of collisions exceeded the retransmission maximum (MACLCON1).
+    uint8_t tx_late_coll : 1;   // Collision occurred beyond the collision window (MACLCON2).
+    uint8_t tx_giant : 1;   // Byte count for frame was greater than MAMXFL.
+    uint8_t tx_underrun : 1;    // Reserved. This bit will always be ‘0’.
+    uint16_t transm_bytes_tot : 16;  // Total bytes transmitted on the wire for the current packet, including all bytes from collided attempts.
+    uint8_t tx_ctrl_frame : 1;  // The frame transmitted was a control frame
+    uint8_t tx_pause_ctrl_frame : 1;    // The frame transmitted was a control frame with a valid pause opcode.
+    uint8_t backpress_appl : 1; //  Carrier sense method backpressure was previously applied.
+    uint8_t tx_vlan_frame : 1;  // Frame’s length/type field contained 8100h which is the VLAN protocol identifier.
+} tsv_t;
+
+/* Receive Status Vector */
+typedef struct rsv_s {
+    uint16_t next_packet_ptr : 16;  // Pointer to the next packet
+    uint16_t rx_byte_cnt : 16;  // Indicates length of the received frame. This includes the destination address, source address, type/length, data, padding and CRC fields. This field is stored in little-endian format.
+    uint8_t rsv_long_drop_events : 1;   //  Indicates a packet over 50,000 bit times occurred or that a packet was dropped since the last receive.
+    uint8_t : 1;
+    uint8_t rsv_carrier_event : 1;  // Indicates that at some time since the last receive, a carrier event was detected. The carrier event is not associated with this packet. A carrier event is activity on the receive channel that does not result in a packet receive attempt being made.
+    uint8_t : 1;
+    uint8_t rsv_crc_err : 1;    // Indicates that frame CRC field value does not match the CRC calculated by the MAC.
+    uint8_t rsv_len_check_err : 1;  // Indicates that frame length field value in the packet does not match the actual data byte length and specifies a valid length.
+    uint8_t rsv_len_oor : 1;    // Indicates that frame type/length field was larger than 1500 bytes (type field).
+    uint8_t rsv_rx_ok : 1;  // Indicates that at the packet had a valid CRC and no symbol errors.
+    uint8_t rsv_rx_multicast : 1;   // Indicates packet received had a valid Multicast address.
+    uint8_t rsv_rx_broadcast : 1;   // Indicates packet received had a valid Broadcast address.
+    uint8_t rsv_dribble_nibble : 1; // Indicates that after the end of this packet, an additional 1 to 7 bits were received. The extra bits were thrown away.
+    uint8_t rsv_rx_ctrl_frame : 1;  // Current frame was recognized as a control frame for having a valid type/length designating it as a control frame.
+    uint8_t rsv_rx_pause_ctrl_frame : 1;    // Current frame was recognized as a control frame containing a valid pause frame opcode and a valid destination address.
+    uint8_t rsv_rx_unkn_opc : 1;    // Current frame was recognized as a control frame but it contained an unknown opcode.
+    uint8_t rsv_rx_vlan_type : 1;   // Current frame was recognized as a VLAN tagged frame.
+} rsv_t;
+
+
 extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                           uint8_t rst_num, volatile uint8_t *rst_port,
                           uint8_t intr_num, volatile uint8_t * intr_port,
-                          bool full_duplex);
+                          bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t));
 extern void enc28j60_soft_reset(void);
 
 extern uint8_t enc28j60_read_rev_id(void);
 extern uint16_t enc28j60_read_PHY(uint8_t reg);
-extern union mac_u enc28j60_get_mac(void);
+extern void enc28j60_get_mac(uint8_t *mac_buf);
+extern int16_t enc28j60_get_rx_free_space(void);
+extern void enc28j60_packet_receive(void);
+extern bool check_link(void);
+extern void enc28j60_irq_handler(void);
 
 #endif  /* !ENC28J60_H */

@@ -1,52 +1,64 @@
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/pgmspace.h>
+#include <avr/interrupt.h>
+
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include <defines.h>
 #include <spi.h>
 
 #include "ENC28J60.h"
 
-static eth_pins ether;
+static struct enc28j60_dev {
+    struct spi_device_s spi_dev;
+    uint16_t next_packet_ptr;
+    void (*rx_handler)(uint8_t *buf, uint16_t size, uint8_t step);
+} enc28j60;
 
-#define ether_sel() (bit_clear(*(ether.cs.port), ether.cs.pin_num))
-#define ether_desel() (bit_set(*(ether.cs.port), ether.cs.pin_num))
+#define ether_sel() (bit_clear(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
+#define ether_desel() (bit_set(*(enc28j60.spi_dev.cs.port), enc28j60.spi_dev.cs.pin_num))
+
+static uint8_t rcr(uint8_t addr);
+static void wcr(uint8_t addr, uint8_t data);
+
 
 /*!
- * TODO: Move to <defines.h>
- * 
- * @brief Reversing bits on an octet.
- * Method attributed to Rich Schroeppel in the Programming Hacks section
- * http://www.inwap.com/pdp10/hbaker/hakmem/hakmem.html
- * http://www.inwap.com/pdp10/hbaker/hakmem/hacks.html#item167
- * 
- * @example:
- * 
- *   1 byte
- * _____________
- *  0100  0001
- *      ||
- *      \/
- *  1000  0010
+ * @brief Change the memory bank
+ * @param addr Register address
  */
-static uint8_t bits_swap(uint8_t data) {
-    return (uint8_t)(((uint64_t)data * 0x0202020202U & 0x010884422010U) % 0x3ffU);
+static void change_memory_bank(uint8_t addr) {
+    // return if it is Common Register
+    if ((addr >= ENC28J60_EIE) && (addr <= ENC28J60_ECON1))
+        return;
+
+    uint8_t bank = (addr & ENC28J60_BANK_MASK) >> 5;
+    
+    uint8_t econ1;
+
+    econ1 = rcr(ENC28J60_ECON1);
+    econ1 = (econ1 & 0b11111100U) | bank;
+    wcr(ENC28J60_ECON1, econ1);
 }
 
 /*!
  * @brief Read Control Register
- * @param reg 5-bit Control Register Address
+ * @param addr Control Register Address
  * @param dummy If the address specifies one of the MAC or MII registers,
  * a dummy byte will first be shifted out on the SO pin.
  * @return 8-bit data from register
  */
-static uint8_t rcr(uint8_t reg, bool dummy) {
+static uint8_t rcr(uint8_t addr) {
     uint8_t result;
 
+    change_memory_bank(addr);
+    
     ether_sel();
-    spi_write(reg);
-    if (dummy)  // dummy read
+    spi_write(ENC28J60_RCR_OP | (addr & ENC28J60_ADDR_MASK));
+    if (addr & ENC28J60_DUMMY_MASK)  // dummy read
         spi_read_8();
     result = spi_read_8();
     ether_desel();
@@ -58,22 +70,28 @@ static uint8_t rcr(uint8_t reg, bool dummy) {
  * @brief Read Buffer Memory
  * @param buf Buffer to write receiving data
  * @param count Number of bytes to read
+ * @param addr Address of start reading
  */
-static void rbm(uint8_t *buf, uint16_t count) {
+static void rbm(uint8_t *buf, uint16_t count, uint16_t addr) {
+    wcr(ENC28J60_ERDPTL, (uint8_t)addr);
+    wcr(ENC28J60_ERDPTH, (uint8_t)(addr >> 8));
+
     ether_sel();
-    spi_write((1U << 5U) | 0b11010U);
+    spi_write(ENC28J60_RBM_OP);
     spi_read_buf(buf, count);
     ether_desel();
 }
 
 /*!
  * @brief Write Control Register
- * @param reg 5-bit Control Register Address
+ * @param addr Control Register Address
  * @param data 8-bit write data
  */
-static void wcr(uint8_t reg, uint8_t data) {
+static void wcr(uint8_t addr, uint8_t data) {
+    change_memory_bank(addr);
+
     ether_sel();
-    spi_write((2U << 5U) | reg);
+    spi_write(ENC28J60_WCR_OP | (addr & ENC28J60_ADDR_MASK));
     spi_write(data);
     ether_desel();
 }
@@ -85,48 +103,37 @@ static void wcr(uint8_t reg, uint8_t data) {
  */
 static void wbm(const uint8_t *buf, uint16_t count) {
     ether_sel();
-    spi_write((3U << 5U) | 0b11010U);
+    spi_write(ENC28J60_WBM_OP);
     spi_write_buf(buf, count);
     ether_desel();
 }
 
 /*!
  * @brief Bit Field Set. ONLY FOR ETH CONTROL REGISTERS!!!
- * @param reg 5-bit Control Register Address
+ * @param addr Control Register Address
  * @param bf Bit Field to set
  */
-static void bfs(uint8_t reg, uint8_t bf) {
+static void bfs(uint8_t addr, uint8_t bf) {
+    change_memory_bank(addr);
+
     ether_sel();
-    spi_write((4U << 5U) | reg);
+    spi_write(ENC28J60_BFS_OP | (addr & ENC28J60_ADDR_MASK));
     spi_write(bf);
     ether_desel();
 }
 
 /*!
  * @brief Bit Field Clear. ONLY FOR ETH CONTROL REGISTERS!!!
- * @param reg 5-bit Control Register Address
+ * @param addr 5-bit Control Register Address
  * @param bf Bit Field to clear
  */
-static void bfc(uint8_t reg, uint8_t bf) {
+static void bfc(uint8_t addr, uint8_t bf) {
+    change_memory_bank(addr);
+
     ether_sel();
-    spi_write((5U << 5U) | reg);
+    spi_write(ENC28J60_BFC_OP | (addr & ENC28J60_ADDR_MASK));
     spi_write(bf);
     ether_desel();
-}
-
-/*!
- * @brief Change the memory bank
- * @param bank Bank number from 0 to 3
- */
-static void change_memory_bank(uint8_t bank) {
-    if (bank > 3)
-        return;
-    
-    uint8_t econ1;
-
-    econ1 = rcr(ENC28J60_ECON1, false);
-    econ1 = (econ1 & 0b11111100U) | bank;
-    wcr(ENC28J60_ECON1, econ1);
 }
 
 /*!
@@ -137,16 +144,13 @@ static void change_memory_bank(uint8_t bank) {
 static uint16_t phy_read(uint8_t reg) {
     uint16_t result = 0;
 
-    change_memory_bank(2);
     wcr(ENC28J60_MIREGADR, reg);
     bfs(ENC28J60_MICMD, _BV(MIIRD));    // starting read
     _delay_us(10.24);
-    change_memory_bank(3);
-    while (rcr(ENC28J60_MISTAT, true) & _BV(BUSY)) {}
-    change_memory_bank(2);
+    while (rcr(ENC28J60_MISTAT) & _BV(BUSY)) {}
     bfc(ENC28J60_MICMD, _BV(MIIRD));
-    result = rcr(ENC28J60_MIRDH, true) << 8U;
-    result |= rcr(ENC28J60_MIRDL, true);
+    result = rcr(ENC28J60_MIRDH) << 8;
+    result |= rcr(ENC28J60_MIRDL);
 
     return result;
 }
@@ -157,13 +161,11 @@ static uint16_t phy_read(uint8_t reg) {
  * @param data 16-bit write data
  */
 static void phy_write(uint8_t reg, uint16_t data) {
-    change_memory_bank(2);
     wcr(ENC28J60_MIREGADR, reg);
     wcr(ENC28J60_MIWRL, (uint8_t)(data & 0xFF));
     wcr(ENC28J60_MIWRH, (uint8_t)(data >> 8));  // starting write
     _delay_us(10.24);
-    change_memory_bank(3);
-    while (rcr(ENC28J60_MISTAT, true) & _BV(BUSY)) {}
+    while (rcr(ENC28J60_MISTAT) & _BV(BUSY)) {}
 }
 
 /*!
@@ -174,7 +176,6 @@ static void phy_write(uint8_t reg, uint16_t data) {
  * @param reg PHY Register Address
  */
 static void phy_scan_start(uint8_t reg) {
-    change_memory_bank(2);
     wcr(ENC28J60_MIREGADR, reg);
     bfs(ENC28J60_MICMD, _BV(MIISCAN));  // starting scan
 }
@@ -183,10 +184,8 @@ static void phy_scan_start(uint8_t reg) {
  * @brief Stop automatically scanning of PHY register
  */
 static void phy_scan_stop(void) {
-    change_memory_bank(2);
     bfc(ENC28J60_MICMD, _BV(MIISCAN));
-    change_memory_bank(3);
-    while (rcr(ENC28J60_MISTAT, true) & _BV(BUSY)) {}
+    while (rcr(ENC28J60_MISTAT) & _BV(BUSY)) {}
 }
 
 /*!
@@ -198,31 +197,127 @@ static void phy_scan_stop(void) {
 static uint16_t phy_scan_rd(void) {
     uint16_t result = 0;
 
-    change_memory_bank(3);
-    while (rcr(ENC28J60_MISTAT, true) & _BV(NVALID)) {}
+    while (rcr(ENC28J60_MISTAT) & _BV(NVALID)) {}
 
-    change_memory_bank(2);
-    result = rcr(ENC28J60_MIRDH, true) << 8U;
-    result |= rcr(ENC28J60_MIRDL, true);
+    result = rcr(ENC28J60_MIRDH) << 8;
+    result |= rcr(ENC28J60_MIRDL);
 
     return result;
 }
 
 /*!
  * @brief Get OUI from PHY-registers and making it canonical
- * @return Canonical OUI
+ * @param oui 3-bytes OUI buffer to store
  */
-static uint32_t get_oui(void) {
-    uint32_t oui, tmp;
+static void get_oui(uint8_t *oui) {
+    uint32_t tmp;
 
     tmp = phy_read(ENC28J60_PHID2) >> 10;
     tmp |= ((uint32_t)phy_read(ENC28J60_PHID1) << 6);
 
-    oui = (uint32_t)bits_swap((uint8_t)(tmp & 0x3FU));
-    oui |= (uint32_t)bits_swap((uint8_t)((tmp >> 8U) & 0xFFU)) << 8U;
-    oui |= (uint32_t)bits_swap((uint8_t)((tmp >> 16U) & 0xFFU)) << 16U;
+    oui[0] = bits_swap(((tmp >> 16) & 0xFFU));
+    oui[1] = bits_swap(((tmp >> 8) & 0xFFU));
+    oui[2] = bits_swap((tmp & 0xFFU));
+}
 
-    return oui;
+/*!
+ * ERXRDPT need to be set always at odd addresses
+ * (by ERRATA, issue #14)
+ */
+static uint16_t erxrdpt_workaround(uint16_t next_packet_ptr, uint16_t rxst, uint16_t rxnd) {
+    if ((next_packet_ptr == rxst) || ((next_packet_ptr - 1) > rxnd))
+        return rxnd;
+    return (next_packet_ptr - 1);
+}
+
+/*!
+ * @brief RX buffer initialize.
+ *  Set ERXST and ERXND pointer - receive buffer.
+ *  For tracking, the ERXRDPT registers should be programmed with the same value
+ *  (ERXRDPTL first, followed by ERXRDPTH).
+ * @param start Start address of RX buffer
+ * @param end End address of RX buffer
+ */
+static void rx_buf_init(uint16_t start, uint16_t end) {
+    uint16_t erxrdpt;
+
+    if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
+        printf_P(PSTR("rx_buf_init(%d, %d) - RX buf bad parameters!\n"), start, end);
+        return;
+    }
+    
+    enc28j60.next_packet_ptr = start;
+    wcr(ENC28J60_ERXSTL, (uint8_t)start);
+    wcr(ENC28J60_ERXSTH, (uint8_t)(start >> 8));
+
+    wcr(ENC28J60_ERXNDL, (uint8_t)end);
+    wcr(ENC28J60_ERXNDH, (uint8_t)(end >> 8));
+
+    erxrdpt = erxrdpt_workaround(enc28j60.next_packet_ptr, start, end);
+    wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);
+    wcr(ENC28J60_ERXRDPTH, (uint8_t)(erxrdpt >> 8));
+}
+
+/*!
+ * @brief TX buffer initialize.
+ * ETXST and ATXND will not be changed after transmit operation.
+ * @param start Start address of TX buffer
+ * @param end End address of TX buffer
+ */
+static void tx_buf_init(uint16_t start, uint16_t end) {
+    if ((start > 0x1FFF) || (end > 0x1FFF) || (start > end)) {
+        printf_P(PSTR("tx_buf_init(%d, %d) - TX buf bad parameters!\n"), start, end);
+        return;
+    }
+    
+    wcr(ENC28J60_ETXSTL, (uint8_t)start);
+    wcr(ENC28J60_ETXSTH, (uint8_t)(start >> 8));
+
+    wcr(ENC28J60_ETXNDL, (uint8_t)end);
+    wcr(ENC28J60_ETXNDH, (uint8_t)(end >> 8));
+}
+
+/*!
+ * @brief Calculate random access address of RX buffer
+ * @param addr Packet start address
+ * @param offset Offset
+ * @return Computed address
+ */
+static uint16_t rand_acc_addr_calc(uint16_t addr, uint16_t offset) {
+    uint16_t tmp = addr + offset;
+    
+    if (tmp > ENC28J60_RXEND_INIT)
+        return (tmp - (ENC28J60_RXEND_INIT - ENC28J60_RXSTART_INIT + 1));
+    return tmp;
+}
+
+/*!
+ * @brief Enable chip to RX and TX, enable interrupts
+ */
+void enc28j60_enable(void) {
+    /* enable interrupt logic */
+
+    phy_write(ENC28J60_PHIR, 0);    // clear all PHY interrupt flags
+    phy_write(ENC28J60_PHIE, (_BV(PGEIE) | _BV(PLNKIE)));
+
+    wcr(ENC28J60_EIR, 0);   // clear all interrupt flags
+    bfs(ENC28J60_EIE, (_BV(INTIE) | _BV(PKTIE) | _BV(DMAIE) | _BV(LINKIE) |
+                       _BV(TXIE) | _BV(TXERIF) | _BV(RXERIE)));
+
+    /* enable receive */
+    bfs(ENC28J60_ECON1, _BV(RXEN));
+}
+
+/*!
+ * @brief Disable chip interrupts and packet reception
+ */
+void enc28j60_disable(void) {
+    // disable all interrupts
+    phy_write(ENC28J60_PHIE, 0);
+    wcr(ENC28J60_EIE, 0);
+    
+    // disable packet reception
+    bfc(ENC28J60_ECON1, _BV(RXEN));
 }
 
 /*!
@@ -230,10 +325,11 @@ static uint32_t get_oui(void) {
  */
 void enc28j60_soft_reset(void) {
     ether_sel();
-    spi_write((7U << 5U) | 0b11111U);
+    spi_write(ENC28J60_SRC_OP);
     ether_desel();
 
-    _delay_us(50);    // delay 50 us after soft reset
+    // _delay_us(50);    // delay 50 us after soft reset
+    _delay_us(1000);    // delay at least 1 ms. Errata issue #2
 }
 
 /*!
@@ -246,25 +342,31 @@ void enc28j60_soft_reset(void) {
  * @param intr_port Interrupt input signal port pointer
  * @param full_duplex \c true - Full-Duplex mode using;
  *                    \c false - Half-Duplex mode using
+ * @param rx_handler Function pointer of the RX packet handler
  */
 void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
                    uint8_t rst_num, volatile uint8_t *rst_port,
                    uint8_t intr_num, volatile uint8_t * intr_port,
-                   bool full_duplex) {
-    union mac_u mac_addr;
+                   bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t)) {
+    uint8_t oui[3], revid, sreg;
+    sreg = SREG;
+    cli();
 
-    ether.cs.pin_num = cs_num;
-    ether.cs.port = cs_port;
-    ether.rst.pin_num = rst_num;
-    ether.rst.port = rst_port;
-    ether.intr.pin_num = intr_num;
-    ether.intr.port = intr_port;
+    enc28j60.spi_dev.cs.pin_num = cs_num;
+    enc28j60.spi_dev.cs.port = cs_port;
+    enc28j60.spi_dev.rst.pin_num = rst_num;
+    enc28j60.spi_dev.rst.port = rst_port;
+    enc28j60.spi_dev.intr.pin_num = intr_num;
+    enc28j60.spi_dev.intr.port = intr_port;
+    enc28j60.spi_dev.a0.pin_num = 0;
+    enc28j60.spi_dev.a0.port = NULL;
+    enc28j60.rx_handler = rx_handler;
     
-    set_output(*(ether.cs.port - 1), ether.cs.pin_num);
-    // set_output(*(port - 1), rst);
-    set_input(*(ether.intr.port - 1), ether.intr.pin_num);
+    ether_desel();
+    set_output(*(enc28j60.spi_dev.cs.port - 1), enc28j60.spi_dev.cs.pin_num);
+    set_input(*(enc28j60.spi_dev.intr.port - 1), enc28j60.spi_dev.intr.pin_num);
     
-    spi_set_speed(ETHER_FREQ);
+    // spi_set_speed(ENC28J60_MAX_FREQ);
     
     /* Oscillator Start-up Timer (OST) - 300 us delay after power-up */
     _delay_us(300);
@@ -273,29 +375,22 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
     enc28j60_soft_reset();
 
     /* INITIALIZATION */
+    revid = rcr(ENC28J60_EREVID) & 0x1F;
+    if ((revid == 0x00) || (revid == 0xFFU)) {
+        printf_P(PSTR("enc28j60_init() - Invalid REVID %d\n"), revid);
+        return;
+    }
     
-    /* Receive Buffer
-       Set ERXST and ERXND pointer - receive buffer. For example: 0x0000 - 0x0FFF.
-       For tracking, the ERXRDPT registers should be programmed with the same value
-       (ERXRDPTL first, followed by ERXRDPTH).
-     */
-    change_memory_bank(0);
-    wcr(ENC28J60_ERXSTL, 0);    // ERXST = 0x0000
-    wcr(ENC28J60_ERXSTH, 0);
-    wcr(ENC28J60_ERXNDL, 0xFF); // ERXND = 0x0FFF
-    wcr(ENC28J60_ERXNDH, 0x0F);
-    wcr(ENC28J60_ERXRDPTL, 0);  // ERXRDPT = ERXST = 0x0000
-    wcr(ENC28J60_ERXRDPTH, 0);
+    /* Receive Buffer init*/
+    rx_buf_init(ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT);
     
-    /* Transmit Buffer
-       No explicit action is required to initialize the transmission buffer.
-     */
+    /* Transmit Buffer init */
+    tx_buf_init(ENC28J60_TXSTART_INIT, ENC28J60_TXEND_INIT);
 
     /* Receive Filters
        The appropriate receive filters should be enabled or disabled by writing to the ERXFCON register.
        By default is set UCEN, CRCEN, BCEN
      */
-    change_memory_bank(1);
     wcr(ENC28J60_ERXFCON, (_BV(UCEN) | _BV(CRCEN) | _BV(BCEN)));
 
     /* Waiting for OST
@@ -304,7 +399,9 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
        reception or accessing any MAC, MII or
        PHY registers.
      */
-    while (!(rcr(ENC28J60_ESTAT, false) & _BV(CLKRDY))) {}
+    while (!(rcr(ENC28J60_ESTAT) & _BV(CLKRDY))) {}
+
+    enc28j60_disable();
     
     /* MAC Initialization Settings
         1. Set the MARXEN bit in MACON1 to enable the MAC to receive frames.
@@ -331,35 +428,34 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
             the default value of MACLCON2 may need to be increased.
         9. Program the local MAC address into the MAADR1:MAADR6 registers.
      */
-    change_memory_bank(2);
     if (full_duplex) {
         wcr(ENC28J60_MACON1, (_BV(MARXEN) | _BV(TXPAUS) | _BV(RXPAUS)));    // 1.
         wcr(ENC28J60_MACON3, (_BV(PADCFG2) | _BV(PADCFG0) | _BV(TXCRCEN) | _BV(FRMLNEN) | _BV(FULDPX)));    // 2.
         wcr(ENC28J60_MACON4, _BV(DEFER));   // 3.
-        wcr(ENC28J60_MABBIPG, 0x15U);   // 5.
+        wcr(ENC28J60_MABBIPG, 0x15);   // 5.
     } else {
         wcr(ENC28J60_MACON1, _BV(MARXEN));  // 1.
         wcr(ENC28J60_MACON3, (_BV(PADCFG2) | _BV(PADCFG0) | _BV(TXCRCEN) | _BV(FRMLNEN)));  // 2.
         wcr(ENC28J60_MACON4, (_BV(DEFER) | _BV(BPEN) | _BV(NOBKOFF)));  // 3.
-        wcr(ENC28J60_MABBIPG, 0x12U);   // 5.
-        wcr(ENC28J60_MAIPGH, 0x0CU);    // 7.
-        wcr(ENC28J60_MACLCON1, 0x0FU);  // 8.   defaul value
-        wcr(ENC28J60_MACLCON2, 0x37U);  // 8.   defaul value
+        wcr(ENC28J60_MABBIPG, 0x12);   // 5.
+        wcr(ENC28J60_MAIPGH, 0x0C);    // 7.
+        wcr(ENC28J60_MACLCON1, 0x0F);  // 8.   defaul value
+        wcr(ENC28J60_MACLCON2, 0x37);  // 8.   defaul value
     }
 
-    wcr(ENC28J60_MAMXFLL, (ETHER_MAX_FRAME_LEN & 0xFFU)); // 4.
-    wcr(ENC28J60_MAMXFLH, (ETHER_MAX_FRAME_LEN >> 8U));   // MAMXFL = 1518
-    wcr(ENC28J60_MAIPGL, 0x12U);    // 6.
+    wcr(ENC28J60_MAMXFLL, (uint8_t)(ENC28J60_MAX_FRAME_LEN & 0xFFU));   // 4.
+    wcr(ENC28J60_MAMXFLH, (uint8_t)(ENC28J60_MAX_FRAME_LEN >> 8));     // MAMXFL = 1518
+    wcr(ENC28J60_MAIPGL, 0x12);    // 6.
 
-    mac_addr.mac_64 = (uint64_t)get_oui() << 24U;
-
-    change_memory_bank(3);  // 9.
-    wcr(ENC28J60_MAADR1, mac_addr.mac_s.mac_1);
-    wcr(ENC28J60_MAADR2, mac_addr.mac_s.mac_2);
-    wcr(ENC28J60_MAADR3, mac_addr.mac_s.mac_3);
-    wcr(ENC28J60_MAADR4, mac_addr.mac_s.mac_4);
-    wcr(ENC28J60_MAADR5, mac_addr.mac_s.mac_5);
-    wcr(ENC28J60_MAADR6, mac_addr.mac_s.mac_6);
+    get_oui(oui);
+    
+    // 9.
+    wcr(ENC28J60_MAADR1, oui[0]);
+    wcr(ENC28J60_MAADR2, oui[1]);
+    wcr(ENC28J60_MAADR3, oui[2]);
+    wcr(ENC28J60_MAADR4, 0);
+    wcr(ENC28J60_MAADR5, 0);
+    wcr(ENC28J60_MAADR6, 0);
 
     /* PHY Initialization Settings
         For proper duplex operation, the PHCON1.PDPXMD bit must
@@ -377,6 +473,12 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
         phy_write(ENC28J60_PHCON1, (phy_read(ENC28J60_PHCON1) & ~_BV(PDPXMD)));
         phy_write(ENC28J60_PHCON2, (phy_read(ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
+
+    printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
+
+    enc28j60_enable();
+    
+    SREG = sreg;
 }
 
 /*!
@@ -386,92 +488,229 @@ void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
 uint8_t enc28j60_read_rev_id(void) {
     uint8_t result;
 
-    change_memory_bank(3);
-    result = rcr(ENC28J60_EREVID, false) & 0x1FU;
+    result = rcr(ENC28J60_EREVID) & 0x1F;
 
     return result;
 }
 
 /*!
- * @brief Get PHY register value
- * @param reg PHY register address
- * @return 16-bit data
- */
-uint16_t enc28j60_read_PHY(uint8_t reg) {
-    return phy_read(reg);
-}
-
-/*!
  * @brief Get MAC-address
- * @return MAC-addr in \c union
+ * @param mac_buf Buffer to store MAC-addr.
+ * Make sure that buffer is long enough (default 6 bytes).
  */
-union mac_u enc28j60_get_mac(void) {
-    union mac_u mac;
-
-    change_memory_bank(3);
-    mac.mac_s.mac_1 = rcr(ENC28J60_MAADR1, true);
-    mac.mac_s.mac_2 = rcr(ENC28J60_MAADR2, true);
-    mac.mac_s.mac_3 = rcr(ENC28J60_MAADR3, true);
-    mac.mac_s.mac_4 = rcr(ENC28J60_MAADR4, true);
-    mac.mac_s.mac_5 = rcr(ENC28J60_MAADR5, true);
-    mac.mac_s.mac_6 = rcr(ENC28J60_MAADR6, true);
-
-    return mac;
+void enc28j60_get_mac(uint8_t *mac_buf) {
+    mac_buf[0] = rcr(ENC28J60_MAADR1);
+    mac_buf[1] = rcr(ENC28J60_MAADR2);
+    mac_buf[2] = rcr(ENC28J60_MAADR3);
+    mac_buf[3] = rcr(ENC28J60_MAADR4);
+    mac_buf[4] = rcr(ENC28J60_MAADR5);
+    mac_buf[5] = rcr(ENC28J60_MAADR6);
 }
 
 /*!
  * @brief Transmitting Packet
- * @param mac_dest Destination MAC address
- * @param mac_src Source MAC address
- * @param type_len EtherType or length of the packet (amount of non-padding data; 1500 or less)
- * @param data Data Packet Payload (0 - 1500 bytes)
- * @param data_len Lenght of \p data buffer
+ * @param frame OSI Layer 2 Ethernet frame
+ * @param len Lenght of \p frame buffer (max 1514)
  * @param ppcb Per Packet Control Byte. 0 by default. Otherwise, refer to the datasheet on chapter 7.1
  */
-void enc28j60_packet_transmit(const union mac_u *mac_dest, const union mac_u *mac_src,
-                              const uint16_t *type_len, const uint8_t *data, uint16_t data_len,
-                              uint8_t ppcb) {
-    /* check if transfer is in progress
-     */
-    while (rcr(ENC28J60_ECON1, false) & _BV(TXRTS)) {}
+void enc28j60_packet_transmit(const uint8_t *frame, uint16_t len, uint8_t ppcb) {
+    uint16_t end;
+
+    /* check if transfer is in progress. Needed? */
+    while (rcr(ENC28J60_ECON1) & _BV(TXRTS)) {}
     
-    /* set ETXST. It is recommended that an even address be used
-     */
+    /* set EWRPT - pointer to start of transmit buffer */
+    wcr(ENC28J60_EWRPTL, (uint8_t)ENC28J60_TXSTART_INIT);
+    wcr(ENC28J60_EWRPTH, (uint8_t)(ENC28J60_TXSTART_INIT >> 8));
     
+    /* write to buffer */
     wbm(&ppcb, 1);
+    wbm(frame, len);
 
-    wbm(&mac_dest->mac_s.mac_1, 1);
-    wbm(&mac_dest->mac_s.mac_2, 1);
-    wbm(&mac_dest->mac_s.mac_3, 1);
-    wbm(&mac_dest->mac_s.mac_4, 1);
-    wbm(&mac_dest->mac_s.mac_5, 1);
-    wbm(&mac_dest->mac_s.mac_6, 1);
-    
-    wbm(&mac_src->mac_s.mac_1, 1);
-    wbm(&mac_src->mac_s.mac_2, 1);
-    wbm(&mac_src->mac_s.mac_3, 1);
-    wbm(&mac_src->mac_s.mac_4, 1);
-    wbm(&mac_src->mac_s.mac_5, 1);
-    wbm(&mac_src->mac_s.mac_6, 1);
+    /* set ETXND. It should point to the last byte in the data payload. */
+    end = ENC28J60_TXSTART_INIT + len;
+    wcr(ENC28J60_ETXNDL, (uint8_t)end);
+    wcr(ENC28J60_ETXNDH, (uint8_t)(end >> 8));
 
-    wbm((uint8_t *)type_len + 1, 1);
-    wbm((uint8_t *)type_len, 1);
-
-    wbm(data, ((data_len > 1500) ? 1500 : data_len));
-
-    /* set ETXND. It should point to the last byte in the data payload.
-    */
-
+    /* Clear EIR.TXIF. Needed? */
     bfc(ENC28J60_EIR, _BV(TXIF));
-    bfs(ENC28J60_EIE, _BV(TXIE));
-    // bfs(ENC28J60_EIE, _BV(INTIE));  // set EIE.INTIE to enable an interrupt when done (if desired).
 
-    bfs(ENC28J60_ECON1, _BV(TXRTS));    // Start the transmission process
+    /* Start the transmission process */
+    bfs(ENC28J60_ECON1, _BV(TXRTS));
 }
 
 /*!
  * @brief Receiving Packet
  */
 void enc28j60_packet_receive(void) {
+    rsv_t rsv;
+    uint16_t erxrdpt, size_tmp, offset;
+    uint8_t *data, step_num;
 
+    /* reading receive status vector */
+    rbm((uint8_t *)&rsv, ENC28J60_RSV_SIZE, enc28j60.next_packet_ptr);
+    
+    if (!(rsv.rsv_rx_ok) || (rsv.rx_byte_cnt > ENC28J60_MAX_FRAME_LEN)) {
+        printf_P(PSTR("--- Receive Packet Error!  ---\n"));
+        if (rsv.rsv_crc_err)
+            printf_P(PSTR("--- --- CRC Error! --- --- ---\n"));
+        if (rsv.rsv_len_check_err)
+            printf_P(PSTR("--- --- Lenght Check Error! --\n"));
+        if (rsv.rx_byte_cnt > ENC28J60_MAX_FRAME_LEN)
+            printf_P(PSTR("--- --- Max Lenght Error - %u\n"), rsv.rx_byte_cnt);
+        rsv.next_packet_ptr = enc28j60.next_packet_ptr;
+    } else {
+        /* reading received packets */
+        offset = ENC28J60_RSV_SIZE; // offset from the packet pointer
+        step_num = 0;
+        while (rsv.rx_byte_cnt) {
+            // division into several steps with a maximum of 512 bytes
+            if (rsv.rx_byte_cnt > 0x0200U) {
+                size_tmp = 0x0200;
+                rsv.rx_byte_cnt -= 0x0200;
+            } else {
+                size_tmp = rsv.rx_byte_cnt;
+                rsv.rx_byte_cnt = 0;
+            }
+            
+            data = malloc(size_tmp);
+            if (data == NULL) {
+                // what to do if not enough memory?
+                printf_P(PSTR("Out of memory for RX buffer - %d bytes\n"), size_tmp);
+                break;
+            }
+            rbm(data, size_tmp, rand_acc_addr_calc(enc28j60.next_packet_ptr, offset));
+            enc28j60.rx_handler(data, size_tmp, step_num++);    // handling
+            free(data);
+            offset += size_tmp;
+        }
+    }
+
+    /* freeing receive buffer space */
+    erxrdpt = erxrdpt_workaround(rsv.next_packet_ptr, ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT);
+    wcr(ENC28J60_ERXRDPTL, (uint8_t)erxrdpt);
+    wcr(ENC28J60_ERXRDPTH, (uint8_t)(erxrdpt >> 8));
+
+    /** At this moment \a rand_acc_addr_calc(enc28j60.next_packet_ptr,offset)
+     * must be equal to \a next_packet_ptr */
+    enc28j60.next_packet_ptr = rsv.next_packet_ptr;
+    bfs(ENC28J60_ECON2, _BV(PKTDEC));   // decrement packet count
+}
+
+/*!
+ * @brief Get size of free space of RX buffer
+ * @return Free space in the RX buffer
+ */
+int16_t enc28j60_get_rx_free_space(void) {
+    uint8_t epktcnt;
+    uint16_t erxwrpt, erxrdpt, erxst, erxnd;
+    int16_t result;
+
+    epktcnt = rcr(ENC28J60_EPKTCNT);
+    if (epktcnt >= 255)
+        return -1;
+    
+    while (true) {
+        erxwrpt = (uint16_t)rcr(ENC28J60_ERXWRPTL);
+        erxwrpt |= (uint16_t)rcr(ENC28J60_ERXWRPTH) << 8;
+        if (epktcnt == rcr(ENC28J60_EPKTCNT))
+            break;
+    }
+
+    erxrdpt = (uint16_t)rcr(ENC28J60_ERXRDPTL);
+    erxrdpt |= (uint16_t)rcr(ENC28J60_ERXRDPTH) << 8;
+
+    erxst = (uint16_t)rcr(ENC28J60_ERXSTL);
+    erxst |= (uint16_t)rcr(ENC28J60_ERXSTH) << 8;
+
+    erxnd = (uint16_t)rcr(ENC28J60_ERXNDL);
+    erxnd |= (uint16_t)rcr(ENC28J60_ERXNDH) << 8;
+
+    if (erxwrpt > erxrdpt)
+        result = (erxnd - erxst) - (erxwrpt - erxrdpt);
+    else if (erxwrpt == erxrdpt)
+        result = erxnd - erxst;
+    else
+        result = erxrdpt - erxwrpt - 1;
+
+    return result;
+}
+
+/*!
+ * @brief Check Link Status
+ * @return True if Link Up; False otherwise
+ */
+bool check_link(void) {
+    return (phy_read(ENC28J60_PHSTAT2) & _BV(LSTAT)) >> LSTAT;
+}
+
+/*!
+ * @brief Interrupt Request Handler
+ */
+void enc28j60_irq_handler(void) {
+    uint8_t intrs;
+    tsv_t tsv;
+
+    bfc(ENC28J60_EIE, _BV(INTIE));  // disable interrupts
+
+    intrs = rcr(ENC28J60_EIR);
+
+    /* Receive Error Interrupt
+     * RX buffer overflow condition or too many packets are in the RX buffer
+     * and more cannot be stored without overflowing the EPKTCNT register
+     */
+    if (intrs & _BV(RXERIF)) {
+        if (enc28j60_get_rx_free_space() <= 0) {
+            printf_P(PSTR("    RX overflow\n"));
+            // pass or process?
+        }
+        bfc(ENC28J60_EIR, _BV(RXERIF));
+    }
+
+    /* TX Interrupt */
+    if ((intrs & _BV(TXIF)) && !(intrs & _BV(TXERIF))) {
+        if (rcr(ENC28J60_ESTAT) & _BV(TXABRT)) {
+            // abort
+        } else {
+            // transmit success
+        }
+        bfc(ENC28J60_EIR, _BV(TXIF));
+    }
+
+    /* Transmit Error Interrupt */
+    if (intrs & _BV(TXERIF)) {
+        rbm((uint8_t *)&tsv, ENC28J60_TSV_SIZE,
+            (((uint16_t)rcr(ENC28J60_ETXNDH) << 8) | (uint16_t)(rcr(ENC28J60_ETXNDL) + 1)));
+        // check tsv to search a problem
+
+        bfc(ENC28J60_EIR, (_BV(TXIF) | _BV(TXERIF)));
+    }
+
+    /* Link Change Interrupt */
+    if (intrs & _BV(LINKIF)) {
+        printf_P(PSTR("    Link is %S\n"), check_link() ? PSTR("Up") : PSTR("Down"));
+
+        /* read PHIR to clear LINKIF */
+        phy_read(ENC28J60_PHIR);
+    }
+
+    /* DMA Interrupt */
+    if (intrs & _BV(DMAIF)) {
+        /* DMA module has completed its memory copy or checksum calculation
+         * or the host controller cancels a DMA operation by
+         * manually clearing the DMAST bit
+         */
+        bfc(ENC28J60_EIR, _BV(DMAIF));
+    }
+
+    /* Receive Packet Pending Interrupt
+     * PKTIF is unreliable (Errate #6)
+     * check EPKTCNT
+     */
+    if (rcr(ENC28J60_EPKTCNT)) {
+        printf_P(PSTR("    Packet receive\n"));
+        enc28j60_packet_receive();
+    }
+
+    bfs(ENC28J60_EIE, _BV(INTIE));  // enable interrupts
 }
