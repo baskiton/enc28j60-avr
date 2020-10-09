@@ -21,7 +21,8 @@
     "frameworks": ["arduino"],
     "platforms": ["atmelavr"],
     "dependencies": {
-        "defines-avr": "^1.1.0",
-        "spi-avr": "^1.3.0"
+        "defines-avr": "^1.2.0",
+        "spi-avr": "^1.4.0",
+        "network-avr": "0.0.1"
     }
 }

@@ -18,8 +18,11 @@
 #define ENC28J60_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <defines.h>
+#include <spi.h>
+#include <net/net_dev.h>
 
 
 #define MAC_ADDR_MAX_LEN 6U
@@ -377,18 +380,13 @@ typedef struct rsv_s {
 } rsv_t;
 
 
-extern void enc28j60_init(uint8_t cs_num, volatile uint8_t *cs_port,
-                          uint8_t rst_num, volatile uint8_t *rst_port,
-                          uint8_t intr_num, volatile uint8_t * intr_port,
-                          bool full_duplex, void (*rx_handler)(uint8_t *, uint16_t, uint8_t));
-extern void enc28j60_soft_reset(void);
+int8_t enc28j60_init(spi_dev_t *spi_dev, struct net_dev_s *net_dev, bool full_duplex);
+void enc28j60_soft_reset(const struct net_dev_s *net_dev);
 
-extern uint8_t enc28j60_read_rev_id(void);
-extern uint16_t enc28j60_read_PHY(uint8_t reg);
-extern void enc28j60_get_mac(uint8_t *mac_buf);
-extern int16_t enc28j60_get_rx_free_space(void);
-extern void enc28j60_packet_receive(void);
-extern bool check_link(void);
-extern void enc28j60_irq_handler(void);
+uint8_t enc28j60_read_rev_id(const struct net_dev_s *net_dev);
+void enc28j60_get_mac(const struct net_dev_s *net_dev, uint8_t *mac_buf);
+int16_t enc28j60_get_rx_free_space(const struct net_dev_s *net_dev);
+void enc28j60_packet_receive(struct net_dev_s *net_dev);
+void enc28j60_irq_handler(struct net_dev_s *net_dev);
 
 #endif  /* !ENC28J60_H */
