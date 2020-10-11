@@ -778,7 +778,7 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
     return 0;
 }
 
-static struct net_dev_ops_s enc28j60_net_dev_ops = {
+const static struct net_dev_ops_s enc28j60_net_dev_ops PROGMEM = {
     // .init = enc28j60_init,
     .init = NULL,
     .open = enc28j60_open,
