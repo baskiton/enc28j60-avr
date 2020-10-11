@@ -380,13 +380,10 @@ typedef struct rsv_s {
 } rsv_t;
 
 
-int8_t enc28j60_init(spi_dev_t *spi_dev, struct net_dev_s *net_dev, bool full_duplex);
-void enc28j60_soft_reset(const struct net_dev_s *net_dev);
+int8_t enc28j60_probe(spi_dev_t *spi_dev);
+void enc28j60_remove(spi_dev_t *spi_dev);
 
 uint8_t enc28j60_read_rev_id(const struct net_dev_s *net_dev);
-void enc28j60_get_mac(const struct net_dev_s *net_dev, uint8_t *mac_buf);
-int16_t enc28j60_get_rx_free_space(const struct net_dev_s *net_dev);
-void enc28j60_packet_receive(struct net_dev_s *net_dev);
 void enc28j60_irq_handler(struct net_dev_s *net_dev);
 
 #endif  /* !ENC28J60_H */
