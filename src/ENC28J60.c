@@ -378,6 +378,11 @@ static int8_t enc28j60_write_mac_addr(struct enc28j60_dev *priv) {
  */
 static int8_t enc28j60_set_mac_addr(struct net_dev_s *net_dev, const void *addr) {
     // struct sock_addr *a = addr;
+    if (net_dev->flags.up_state) {
+        // Device must be disable
+        // EBUSY
+        return -1;
+    }
 
     memcpy(net_dev->dev_addr, addr, ETH_MAC_LEN);
     
@@ -448,6 +453,28 @@ static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
 }
 
 /*!
+ * @brief Config a receive filter
+ */
+void enc28j60_set_rx_mode(struct net_dev_s *net_dev) {
+    struct enc28j60_dev *priv = net_dev->priv;
+    uint8_t mode = 0;
+
+    if (net_dev->flags.rx_mode == RX_RT_PROMISC) {
+        mode = 0x00;
+    } else if (net_dev->flags.rx_mode == RX_RT_ALLMULTI) {
+        mode = _BV(UCEN) | _BV(CRCEN) | _BV(MCEN) | _BV(BCEN);
+    } else if (net_dev->flags.rx_mode == RX_RT_UNICAST) {
+        mode = _BV(UCEN) | _BV(CRCEN);
+    } else if (net_dev->flags.rx_mode == RX_RT_MULTICAST) {
+        mode = _BV(UCEN) | _BV(CRCEN) | _BV(MCEN);
+    } else {    // RX_RT_BROADCAST - 0 by default
+        mode = _BV(UCEN) | _BV(CRCEN) | _BV(BCEN);
+    }
+
+    wcr(priv, ENC28J60_ERXFCON, mode);
+}
+
+/*!
  * @brief Receiving Packet
  */
 static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
@@ -470,17 +497,17 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
         rsv.next_packet_ptr = priv->packet_ptr;
     } else {
         /* reading received packets */
-        data = net_alloc_buff(net_dev, rsv.rx_byte_cnt);
-        if (data == NULL) {
+        data = ndev_alloc_net_buff(net_dev, rsv.rx_byte_cnt);
+        if (!data) {
             // what to do if not enough memory?
-            printf_P(PSTR("Out of memory for RX buffer - %d bytes\n"),
-                     rsv.rx_byte_cnt);
+            printf_P(PSTR("Out of memory for RX buffer. Need %d byte(s). Avail %ld byte(s)\n"),
+                     rsv.rx_byte_cnt, get_free_mem_size());
         } else {
-            rbm(priv, data, rsv.rx_byte_cnt,
+            rbm(priv, data->head, rsv.rx_byte_cnt,
                 rand_acc_addr_calc(priv->packet_ptr, ENC28J60_RSV_SIZE));
             /** 
-             * FIXME:
-             *  Here it is necessary to call the packet handler orsomehow
+             * TODO:
+             *  Here it is necessary to call the packet handler or somehow
              *  notify the controller about the start of processing.
              * ATTENTION:
              *  IN THE HANDLER, YOU MUST REMEMBER TO FREE THE ALLOCATED MEMORY.
@@ -508,7 +535,7 @@ static int16_t enc28j60_get_rx_free_space(const struct enc28j60_dev *priv) {
     int16_t result;
 
     epktcnt = rcr(priv, ENC28J60_EPKTCNT);
-    if (epktcnt >= 255)
+    if (epktcnt == 255)
         return -1;
     
     while (true) {
@@ -574,6 +601,18 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
             printf_P(PSTR("    RX overflow\n"));
             // pass or process?
         }
+        /* Flow Control - Send Pause Control Frame
+        (by the IEEE 802.3 specification).
+        The packet being received will be aborted (permanently lost) */
+        if (net_dev->flags.full_duplex) {
+            // send one pause frame then turn flow control off
+            wcr(priv, ENC28J60_EFLOCON, _BV(FCEN0));
+        }
+        /* If half-duplex, flow control will automatically sending
+        pause frame until host-controller tells to transmit a packet.
+        This can cause collisions, so half-duplex flow control
+        is not recommended. */
+
         bfc(priv, ENC28J60_EIR, _BV(RXERIF));
     }
 
@@ -623,8 +662,8 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
      * check EPKTCNT
      */
     if (rcr(priv, ENC28J60_EPKTCNT)) {
-        enc28j60_packet_receive(priv);
         printf_P(PSTR("    Packet receive\n"));
+        enc28j60_packet_receive(priv);
     }
 
     bfs(priv, ENC28J60_EIE, _BV(INTIE));  // enable interrupts
@@ -652,6 +691,8 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
     /* reset routine */
     enc28j60_soft_reset(priv);
 
+    net_dev->flags.up_state = 0;
+
     /* INITIALIZATION */
     revid = rcr(priv, ENC28J60_EREVID) & 0x1F;
     if ((revid == 0x00) || (revid == 0xFFU)) {
@@ -674,6 +715,7 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
        The appropriate receive filters should be enabled or
        disabled by writing to the ERXFCON register.
        By default is set UCEN, CRCEN, BCEN
+       (unicast, broadcast and CRC check)
      */
     wcr(priv, ENC28J60_ERXFCON, (_BV(UCEN) | _BV(CRCEN) | _BV(BCEN)));
 
@@ -781,12 +823,14 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
     return 0;
 }
 
-static const struct net_dev_ops_s enc28j60_net_dev_ops PROGMEM = {
+/** TODO: move this to PROGMEM */
+static const struct net_dev_ops_s enc28j60_net_dev_ops = {
     // .init = enc28j60_init,
     .init = NULL,
     .open = enc28j60_open,
     .stop = enc28j60_disable,
     .start_tx = enc28j60_packet_transmit,
+    .set_rx_mode = enc28j60_set_rx_mode,
     .set_mac_addr = enc28j60_set_mac_addr,
     .irq_handler = enc28j60_irq_handler,
 };
