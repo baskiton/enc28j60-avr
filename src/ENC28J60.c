@@ -21,6 +21,7 @@ struct enc28j60_dev {
     struct net_dev_s *net_dev;
     struct spi_device_s *spi_dev;
     uint16_t packet_ptr;
+    struct net_buff_s *tx_nbuff;
 };
 
 static uint8_t rcr(const struct enc28j60_dev *priv, uint8_t addr);
@@ -431,6 +432,8 @@ static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
 
     /* check if transfer is in progress. Needed? */
     while (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {}
+
+    priv->tx_nbuff = net_buff;
     
     /* set EWRPT - pointer to start of transmit buffer */
     wcr(priv, ENC28J60_EWRPTL, (uint8_t)ENC28J60_TXSTART_INIT);
@@ -438,10 +441,10 @@ static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
     
     /* write to buffer */
     wbm(priv, &ppcb, 1);
-    wbm(priv, net_buff->head, net_buff->len);
+    wbm(priv, net_buff->head, net_buff->pkt_len);
 
     /* set ETXND. It should point to the last byte in the data payload. */
-    end = ENC28J60_TXSTART_INIT + net_buff->len;
+    end = ENC28J60_TXSTART_INIT + net_buff->pkt_len;
     wcr(priv, ENC28J60_ETXNDL, (uint8_t)end);
     wcr(priv, ENC28J60_ETXNDH, (uint8_t)(end >> 8));
 
@@ -459,14 +462,14 @@ void enc28j60_set_rx_mode(struct net_dev_s *net_dev) {
     struct enc28j60_dev *priv = net_dev->priv;
     uint8_t mode = 0;
 
-    if (net_dev->flags.rx_mode == RX_RT_PROMISC) {
+    if (net_dev->flags.rx_mode && RX_RT_PROMISC) {
         mode = 0x00;
-    } else if (net_dev->flags.rx_mode == RX_RT_ALLMULTI) {
+    } else if (net_dev->flags.rx_mode && RX_RT_ALLMULTI) {
         mode = _BV(UCEN) | _BV(CRCEN) | _BV(MCEN) | _BV(BCEN);
-    } else if (net_dev->flags.rx_mode == RX_RT_UNICAST) {
-        mode = _BV(UCEN) | _BV(CRCEN);
-    } else if (net_dev->flags.rx_mode == RX_RT_MULTICAST) {
-        mode = _BV(UCEN) | _BV(CRCEN) | _BV(MCEN);
+    // } else if (net_dev->flags.rx_mode && RX_RT_UNICAST) {
+    //     mode = _BV(UCEN) | _BV(CRCEN);
+    // } else if (net_dev->flags.rx_mode && RX_RT_MULTICAST) {
+    //     mode = _BV(UCEN) | _BV(CRCEN) | _BV(MCEN);
     } else {    // RX_RT_BROADCAST - 0 by default
         mode = _BV(UCEN) | _BV(CRCEN) | _BV(BCEN);
     }
@@ -503,9 +506,11 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
             printf_P(PSTR("Out of memory for RX buffer. Need %d byte(s). Avail %ld byte(s)\n"),
                      rsv.rx_byte_cnt, get_free_mem_size());
         } else {
-            rbm(priv, data->head, rsv.rx_byte_cnt,
+            rbm(priv, put_net_buff(data, rsv.rx_byte_cnt), rsv.rx_byte_cnt,
                 rand_acc_addr_calc(priv->packet_ptr, ENC28J60_RSV_SIZE));
-            /** 
+            data->protocol = eth_type_proto(data, net_dev);
+            data->flags.ip_summed = CHECKSUM_HW;
+            /**
              * TODO:
              *  Here it is necessary to call the packet handler or somehow
              *  notify the controller about the start of processing.
@@ -625,6 +630,8 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
             // transmit success
             printf_P(PSTR("    TX success\n"));
         }
+        free_net_buff(priv->tx_nbuff);
+        priv->tx_nbuff = NULL;
         bfc(priv, ENC28J60_EIR, _BV(TXIF));
     }
 
@@ -846,7 +853,7 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
     int8_t ret;
     uint8_t *mac;
 
-    ndev = ether_dev_alloc(sizeof(struct enc28j60_dev));
+    ndev = eth_dev_alloc(sizeof(struct enc28j60_dev));
     if (!ndev) {
         // ENOMEM
         return -1;
