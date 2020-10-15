@@ -339,6 +339,8 @@ static void enc28j60_disable(struct net_dev_s *net_dev) {
     
     // disable packet reception
     bfc(priv, ENC28J60_ECON1, _BV(RXEN));
+
+    net_dev_tx_disallow(net_dev);
 }
 
 /*!
@@ -421,8 +423,10 @@ static void enc28j60_get_mac(const struct enc28j60_dev *priv, uint8_t *mac_buf) 
  * @brief Transmitting Packet
  * @param net_buff Pointer to buffer with data
  * @param dev Device
+ * @return \a NETDEV_TX_OK if transfer ok;
+ *         \a NETDEV_TX_BUSY if tx was busy
  */
-static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
+static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
                                      struct net_dev_s *net_dev) {
     /* Per Packet Control Byte. 0 by default.
         Otherwise, refer to the datasheet on chapter 7.1 */
@@ -430,8 +434,12 @@ static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
     uint16_t end;
     struct enc28j60_dev *priv = net_dev->priv;
 
-    /* check if transfer is in progress. Needed? */
-    while (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {}
+    /* check if transfer is in progress. just in case */
+    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {
+        return NETDEV_TX_BUSY;
+    }
+
+    net_dev_tx_disallow(net_dev);
 
     priv->tx_nbuff = net_buff;
     
@@ -453,6 +461,11 @@ static void enc28j60_packet_transmit(struct net_buff_s *net_buff,
 
     /* Start the transmission process */
     bfs(priv, ENC28J60_ECON1, _BV(TXRTS));
+
+    free_net_buff(priv->tx_nbuff);
+    priv->tx_nbuff = NULL;
+
+    return NETDEV_TX_OK;
 }
 
 /*!
@@ -486,6 +499,17 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
     struct net_buff_s *data;
     struct net_dev_s *net_dev = priv->net_dev;
 
+    if (priv->packet_ptr > ENC28J60_RXEND_INIT) {
+        // packet address corrupted
+        bfs(priv, ENC28J60_ECON1, RXRST);
+        bfc(priv, ENC28J60_ECON1, RXRST);
+        if (rx_buf_init(priv, ENC28J60_RXSTART_INIT, ENC28J60_RXEND_INIT))
+            return;
+        bfc(priv, ENC28J60_EIR, RXERIF);    // clr this cause receive was aborted
+        bfs(priv, ENC28J60_ECON1, RXEN);    // rx enable and...
+        return; // and exit without decrement packets count
+    }
+
     /* reading receive status vector */
     rbm(priv, (uint8_t *)&rsv, ENC28J60_RSV_SIZE, priv->packet_ptr);
     
@@ -518,7 +542,6 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
              * ATTENTION:
              *  IN THE HANDLER, YOU MUST REMEMBER TO FREE THE ALLOCATED MEMORY.
              */
-            free_net_buff(data);
         }
     }
 
@@ -632,8 +655,8 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
             // transmit success
             printf_P(PSTR("    TX success\n"));
         }
-        free_net_buff(priv->tx_nbuff);
-        priv->tx_nbuff = NULL;
+        net_dev_tx_allow(net_dev);
+
         bfc(priv, ENC28J60_EIR, _BV(TXIF));
     }
 
@@ -642,8 +665,20 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
         rbm(priv, (uint8_t *)&tsv, ENC28J60_TSV_SIZE,
             (((uint16_t)rcr(priv, ENC28J60_ETXNDH) << 8) |
              (uint16_t)(rcr(priv, ENC28J60_ETXNDL) + 1)));
-        // check tsv to search a problem
+        
+        /* reset tx logic */
+        bfs(priv, ENC28J60_ECON1, TXRST);
+        bfc(priv, ENC28J60_ECON1, TXRST);
+        tx_buf_init(priv, ENC28J60_TXSTART_INIT, ENC28J60_TXEND_INIT);
+        
+        /** check tsv to search a problem
+         *  TODO: for half-duplex:
+         *      if collision occured, check for retransmit
+         */
+
         printf_P(PSTR("    TX error\n"));
+
+        net_dev_tx_allow(net_dev);
 
         bfc(priv, ENC28J60_EIR, (_BV(TXIF) | _BV(TXERIF)));
     }
@@ -828,6 +863,7 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
     enc28j60_write_mac_addr(priv);
     enc28j60_enable(priv);
     enc28j60_check_link(priv);
+    net_dev_tx_allow(net_dev);
 
     return 0;
 }
