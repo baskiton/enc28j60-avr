@@ -530,7 +530,6 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
             printf_P(PSTR("Out of memory for RX buffer. Need %d byte(s). Avail %ld byte(s)\n"),
                      rsv.rx_byte_cnt, get_free_mem_size());
         } else {
-            printf_P(PSTR("was allocated %u bytes\n"), rsv.rx_byte_cnt);
             rbm(priv, put_net_buff(data, rsv.rx_byte_cnt), rsv.rx_byte_cnt,
                 rand_acc_addr_calc(priv->packet_ptr, ENC28J60_RSV_SIZE));
             data->protocol = eth_type_proto(data, net_dev);
@@ -595,16 +594,14 @@ static int16_t enc28j60_get_rx_free_space(const struct enc28j60_dev *priv) {
 }
 
 /*!
- * @brief Check and set Link Status
+ * @brief Check Link Status and set flag
  * @return True if Link Up; False otherwise
  */
 static bool enc28j60_check_link(const struct enc28j60_dev *priv) {
     if (phy_read(priv, ENC28J60_PHSTAT2) & _BV(LSTAT)) {
         priv->net_dev->flags.link_status = 1;
-        printf_P(PSTR("    Link is %S\n"), PSTR("Up"));
     } else {
         priv->net_dev->flags.link_status = 0;
-        printf_P(PSTR("    Link is %S\n"), PSTR("Down"));
     }
 
     return (bool)(priv->net_dev->flags.link_status);
@@ -653,7 +650,6 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
             printf_P(PSTR("    TX abort\n"));
         } else {
             // transmit success
-            printf_P(PSTR("    TX success\n"));
         }
         net_dev_tx_allow(net_dev);
 
@@ -706,7 +702,6 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
      * check EPKTCNT
      */
     if (rcr(priv, ENC28J60_EPKTCNT)) {
-        printf_P(PSTR("    Packet receive\n"));
         enc28j60_packet_receive(priv);
     }
 
@@ -870,7 +865,6 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
 
 /** TODO: move this to PROGMEM */
 static const struct net_dev_ops_s enc28j60_net_dev_ops = {
-    // .init = enc28j60_init,
     .init = NULL,
     .open = enc28j60_open,
     .stop = enc28j60_disable,
@@ -931,7 +925,8 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
 }
 
 /*!
- *
+ * @brief Remove this device and free up the memory it occupies.
+ * @param spi_dev Pointer to the SPI-structure associated with the device.
  */
 void enc28j60_remove(spi_dev_t *spi_dev) {
     struct enc28j60_dev *priv = spi_dev->priv_data;
