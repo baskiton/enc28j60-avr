@@ -23,6 +23,6 @@
     "dependencies": {
         "defines-avr": "^1.2.0",
         "spi-avr": "^1.4.0",
-        "network-avr": "0.0.1"
+        "network-avr": "0.1.0"
     }
 }
