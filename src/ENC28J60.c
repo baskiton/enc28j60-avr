@@ -393,6 +393,24 @@ static int8_t enc28j60_set_mac_addr(struct net_dev_s *net_dev, const void *addr)
 }
 
 /*!
+ * @brief Set settings for this device
+ * @param net_dev Network Device
+ * @param full_duplex Duplex mode
+ * @return 0 ifsuccess
+ */
+static int8_t enc28j60_set_settings(struct net_dev_s *net_dev, bool full_duplex) {
+    if (net_dev_upstate_is_run(net_dev)) {
+        // Device must be disable
+        // EBUSY
+        return -1;
+    }
+
+    net_dev->flags.full_duplex = full_duplex;
+
+    return 0;
+}
+
+/*!
  * @brief Get Ethernet Revision ID
  * @return 5-bit revision ID
  */
@@ -873,6 +891,7 @@ static const struct net_dev_ops_s enc28j60_net_dev_ops = {
     .start_tx = enc28j60_packet_transmit,
     .set_rx_mode = enc28j60_set_rx_mode,
     .set_mac_addr = enc28j60_set_mac_addr,
+    .set_dev_settings = enc28j60_set_settings,
     .irq_handler = enc28j60_irq_handler,
 };
 
