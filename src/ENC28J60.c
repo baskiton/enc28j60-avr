@@ -853,7 +853,8 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
                   (phy_read(priv, ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
 
-    printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
+    printf_P(PSTR("ENC28J60 initialized with RevID %d, %S Duplex\n"),
+             revid, net_dev->flags.full_duplex ? PSTR("Full") : PSTR("Half"));
 
     SREG = sreg;
 
@@ -927,9 +928,9 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
     mac[3] = mac[4] = mac[5] = 0;
     enc28j60_write_mac_addr(priv);
 
-    irq_hdlr_add(ndev);
-
     ndev->netdev_ops = &enc28j60_net_dev_ops;
+
+    irq_hdlr_add(ndev);
 
     ret = netdev_register(ndev);
     if (ret) {
