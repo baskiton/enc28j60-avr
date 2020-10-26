@@ -951,6 +951,6 @@ void enc28j60_remove(spi_dev_t *spi_dev) {
     struct enc28j60_dev *priv = spi_dev->priv_data;
 
     netdev_unregister(priv->net_dev);
-    /** TODO: here need to free the interrupt handler */
+    irq_hdlr_del();
     net_dev_free(priv->net_dev);
 }
