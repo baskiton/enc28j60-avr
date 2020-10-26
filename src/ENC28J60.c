@@ -14,6 +14,8 @@
 #include <net/net.h>
 #include <net/net_dev.h>
 #include <net/socket.h>
+#include <net/interrupt.h>
+#include <net/pkt_handler.h>
 
 #include "ENC28J60.h"
 
@@ -552,13 +554,8 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
                 rand_acc_addr_calc(priv->packet_ptr, ENC28J60_RSV_SIZE));
             data->protocol = eth_type_proto(data, net_dev);
             data->flags.ip_summed = CHECKSUM_HW;
-            /**
-             * TODO:
-             *  Here it is necessary to call the packet handler or somehow
-             *  notify the controller about the start of processing.
-             * ATTENTION:
-             *  IN THE HANDLER, YOU MUST REMEMBER TO FREE THE ALLOCATED MEMORY.
-             */
+            
+            recv_pkt_handler(data);
         }
     }
 
@@ -930,14 +927,14 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
     mac[3] = mac[4] = mac[5] = 0;
     enc28j60_write_mac_addr(priv);
 
-    /** TODO: here need to configure the interrupt handler */
+    irq_hdlr_add(ndev);
 
     ndev->netdev_ops = &enc28j60_net_dev_ops;
 
     ret = netdev_register(ndev);
     if (ret) {
         // register error
-        /** TODO: here need to free the interrupt handler */
+        irq_hdlr_del();
         net_dev_free(ndev);
         return ret;
     }
