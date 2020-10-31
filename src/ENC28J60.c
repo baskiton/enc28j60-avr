@@ -14,6 +14,8 @@
 #include <net/net.h>
 #include <net/net_dev.h>
 #include <net/socket.h>
+#include <net/interrupt.h>
+#include <net/pkt_handler.h>
 
 #include "ENC28J60.h"
 
@@ -381,7 +383,7 @@ static int8_t enc28j60_write_mac_addr(struct enc28j60_dev *priv) {
  */
 static int8_t enc28j60_set_mac_addr(struct net_dev_s *net_dev, const void *addr) {
     // struct sock_addr *a = addr;
-    if (net_dev->flags.up_state) {
+    if (net_dev_upstate_is_run(net_dev)) {
         // Device must be disable
         // EBUSY
         return -1;
@@ -390,6 +392,24 @@ static int8_t enc28j60_set_mac_addr(struct net_dev_s *net_dev, const void *addr)
     memcpy(net_dev->dev_addr, addr, ETH_MAC_LEN);
     
     return enc28j60_write_mac_addr(net_dev->priv);
+}
+
+/*!
+ * @brief Set settings for this device
+ * @param net_dev Network Device
+ * @param full_duplex Duplex mode
+ * @return 0 ifsuccess
+ */
+static int8_t enc28j60_set_settings(struct net_dev_s *net_dev, bool full_duplex) {
+    if (net_dev_upstate_is_run(net_dev)) {
+        // Device must be disable
+        // EBUSY
+        return -1;
+    }
+
+    net_dev->flags.full_duplex = full_duplex;
+
+    return 0;
 }
 
 /*!
@@ -534,13 +554,8 @@ static void enc28j60_packet_receive(struct enc28j60_dev *priv) {
                 rand_acc_addr_calc(priv->packet_ptr, ENC28J60_RSV_SIZE));
             data->protocol = eth_type_proto(data, net_dev);
             data->flags.ip_summed = CHECKSUM_HW;
-            /**
-             * TODO:
-             *  Here it is necessary to call the packet handler or somehow
-             *  notify the controller about the start of processing.
-             * ATTENTION:
-             *  IN THE HANDLER, YOU MUST REMEMBER TO FREE THE ALLOCATED MEMORY.
-             */
+            
+            recv_pkt_handler(data);
         }
     }
 
@@ -598,13 +613,15 @@ static int16_t enc28j60_get_rx_free_space(const struct enc28j60_dev *priv) {
  * @return True if Link Up; False otherwise
  */
 static bool enc28j60_check_link(const struct enc28j60_dev *priv) {
+    struct net_dev_s *net_dev = priv->net_dev;
+
     if (phy_read(priv, ENC28J60_PHSTAT2) & _BV(LSTAT)) {
-        priv->net_dev->flags.link_status = 1;
+        net_dev_set_link_up(net_dev);
     } else {
-        priv->net_dev->flags.link_status = 0;
+        net_dev_set_link_down(net_dev);
     }
 
-    return (bool)(priv->net_dev->flags.link_status);
+    return net_dev_link_is_up(net_dev);
 }
 
 /*!
@@ -730,7 +747,7 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
     /* reset routine */
     enc28j60_soft_reset(priv);
 
-    net_dev->flags.up_state = 0;
+    net_dev_set_upstate_stop(net_dev);
 
     /* INITIALIZATION */
     revid = rcr(priv, ENC28J60_EREVID) & 0x1F;
@@ -836,7 +853,8 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
                   (phy_read(priv, ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
 
-    printf_P(PSTR("ENC28J60 initialized with RevID %d\n"), revid);
+    printf_P(PSTR("ENC28J60 initialized with RevID %d, %S Duplex\n"),
+             revid, net_dev->flags.full_duplex ? PSTR("Full") : PSTR("Half"));
 
     SREG = sreg;
 
@@ -871,6 +889,7 @@ static const struct net_dev_ops_s enc28j60_net_dev_ops = {
     .start_tx = enc28j60_packet_transmit,
     .set_rx_mode = enc28j60_set_rx_mode,
     .set_mac_addr = enc28j60_set_mac_addr,
+    .set_dev_settings = enc28j60_set_settings,
     .irq_handler = enc28j60_irq_handler,
 };
 
@@ -909,14 +928,14 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
     mac[3] = mac[4] = mac[5] = 0;
     enc28j60_write_mac_addr(priv);
 
-    /** TODO: here need to configure the interrupt handler */
-
     ndev->netdev_ops = &enc28j60_net_dev_ops;
+
+    irq_hdlr_add(ndev);
 
     ret = netdev_register(ndev);
     if (ret) {
         // register error
-        /** TODO: here need to free the interrupt handler */
+        irq_hdlr_del();
         net_dev_free(ndev);
         return ret;
     }
@@ -932,6 +951,6 @@ void enc28j60_remove(spi_dev_t *spi_dev) {
     struct enc28j60_dev *priv = spi_dev->priv_data;
 
     netdev_unregister(priv->net_dev);
-    /** TODO: here need to free the interrupt handler */
+    irq_hdlr_del();
     net_dev_free(priv->net_dev);
 }
