@@ -881,8 +881,7 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
     return 0;
 }
 
-/** TODO: move this to PROGMEM */
-static const struct net_dev_ops_s enc28j60_net_dev_ops = {
+static const struct net_dev_ops_s enc28j60_net_dev_ops PROGMEM = {
     .init = NULL,
     .open = enc28j60_open,
     .stop = enc28j60_disable,
