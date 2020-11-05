@@ -181,26 +181,26 @@ static void phy_write(const struct enc28j60_dev *priv,
  * When the \p MIISCAN operation is in progress, the host controller
  * must not attempt to write to \p MIWRH or start an \p MIIRD operation.
  * @param reg PHY Register Address
- */
+ *
 static void phy_scan_start(const struct enc28j60_dev *priv, uint8_t reg) {
     wcr(priv, ENC28J60_MIREGADR, reg);
     bfs(priv, ENC28J60_MICMD, _BV(MIISCAN));  // starting scan
-}
+}   // */
 
 /*!
  * @brief Stop automatically scanning of PHY register
- */
+ *
 static void phy_scan_stop(const struct enc28j60_dev *priv) {
     bfc(priv, ENC28J60_MICMD, _BV(MIISCAN));
     while (rcr(priv, ENC28J60_MISTAT) & _BV(BUSY)) {}
-}
+}   // */
 
 /*!
  * @brief Get value with autoscan PHY-gerister.
  * Since the host controller can only read one MII register at a time,
  * the \p MIRDL and \p MIRDH values ​​will be read from the PHY at different times.
  * @return 16-bit data from PHY-register
- */
+ *
 static uint16_t phy_scan_rd(const struct enc28j60_dev *priv) {
     uint16_t result = 0;
 
@@ -210,7 +210,7 @@ static uint16_t phy_scan_rd(const struct enc28j60_dev *priv) {
     result |= rcr(priv, ENC28J60_MIRDL);
 
     return result;
-}
+}   // */
 
 /*!
  * @brief Get OUI from PHY-registers and making it canonical
