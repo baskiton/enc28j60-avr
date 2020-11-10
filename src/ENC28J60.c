@@ -273,7 +273,7 @@ static int8_t rx_buf_init(struct enc28j60_dev *priv,
 
 /*!
  * @brief TX buffer initialize.
- * ETXST and ATXND will not be changed after transmit operation.
+ * ETXST and ETXND will not be changed after transmit operation.
  * @param start Start address of TX buffer
  * @param end End address of TX buffer
  * @return 0 if success; errno if error
@@ -285,7 +285,7 @@ static int8_t tx_buf_init(struct enc28j60_dev *priv,
         // errno
         return -1;
     }
-    
+
     wcr(priv, ENC28J60_ETXSTL, (uint8_t)start);
     wcr(priv, ENC28J60_ETXSTH, (uint8_t)(start >> 8));
 
@@ -447,7 +447,7 @@ static void enc28j60_get_mac(const struct enc28j60_dev *priv, uint8_t *mac_buf) 
  *         \a NETDEV_TX_BUSY if tx was busy
  */
 static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
-                                     struct net_dev_s *net_dev) {
+                                       struct net_dev_s *net_dev) {
     /* Per Packet Control Byte. 0 by default.
         Otherwise, refer to the datasheet on chapter 7.1 */
     uint8_t ppcb = 0;
@@ -456,6 +456,7 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
 
     /* check if transfer is in progress. just in case */
     if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {
+        net_dev_tx_disallow(net_dev);
         return NETDEV_TX_BUSY;
     }
 
@@ -852,6 +853,8 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
         phy_write(priv, ENC28J60_PHCON2,
                   (phy_read(priv, ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
+
+    net_dev->mtu = 1500;
 
     printf_P(PSTR("ENC28J60 initialized with RevID %d, %S Duplex\n"),
              revid, net_dev->flags.full_duplex ? PSTR("Full") : PSTR("Half"));
