@@ -23,7 +23,6 @@ struct enc28j60_dev {
     struct net_dev_s *net_dev;
     struct spi_device_s *spi_dev;
     uint16_t packet_ptr;
-    struct net_buff_s *tx_nbuff;
 };
 
 static uint8_t rcr(const struct enc28j60_dev *priv, uint8_t addr);
@@ -453,17 +452,16 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
     uint8_t ppcb = 0;
     uint16_t end;
     struct enc28j60_dev *priv = net_dev->priv;
+    uint8_t sreg = SREG;
 
-    /* check if transfer is in progress. just in case */
-    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {
-        net_dev_tx_disallow(net_dev);
-        return NETDEV_TX_BUSY;
-    }
+    cli();
 
     net_dev_tx_disallow(net_dev);
 
-    priv->tx_nbuff = net_buff;
-    
+    /* check if transfer is in progress. just in case */
+    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS))
+        return NETDEV_TX_BUSY;
+
     /* set EWRPT - pointer to start of transmit buffer */
     wcr(priv, ENC28J60_EWRPTL, (uint8_t)ENC28J60_TXSTART_INIT);
     wcr(priv, ENC28J60_EWRPTH, (uint8_t)(ENC28J60_TXSTART_INIT >> 8));
@@ -483,8 +481,9 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
     /* Start the transmission process */
     bfs(priv, ENC28J60_ECON1, _BV(TXRTS));
 
-    free_net_buff(priv->tx_nbuff);
-    priv->tx_nbuff = NULL;
+    free_net_buff(net_buff);
+
+    SREG = sreg;
 
     return NETDEV_TX_OK;
 }
