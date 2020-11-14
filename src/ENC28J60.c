@@ -23,7 +23,6 @@ struct enc28j60_dev {
     struct net_dev_s *net_dev;
     struct spi_device_s *spi_dev;
     uint16_t packet_ptr;
-    struct net_buff_s *tx_nbuff;
 };
 
 static uint8_t rcr(const struct enc28j60_dev *priv, uint8_t addr);
@@ -181,26 +180,26 @@ static void phy_write(const struct enc28j60_dev *priv,
  * When the \p MIISCAN operation is in progress, the host controller
  * must not attempt to write to \p MIWRH or start an \p MIIRD operation.
  * @param reg PHY Register Address
- */
+ *
 static void phy_scan_start(const struct enc28j60_dev *priv, uint8_t reg) {
     wcr(priv, ENC28J60_MIREGADR, reg);
     bfs(priv, ENC28J60_MICMD, _BV(MIISCAN));  // starting scan
-}
+}   // */
 
 /*!
  * @brief Stop automatically scanning of PHY register
- */
+ *
 static void phy_scan_stop(const struct enc28j60_dev *priv) {
     bfc(priv, ENC28J60_MICMD, _BV(MIISCAN));
     while (rcr(priv, ENC28J60_MISTAT) & _BV(BUSY)) {}
-}
+}   // */
 
 /*!
  * @brief Get value with autoscan PHY-gerister.
  * Since the host controller can only read one MII register at a time,
  * the \p MIRDL and \p MIRDH values ​​will be read from the PHY at different times.
  * @return 16-bit data from PHY-register
- */
+ *
 static uint16_t phy_scan_rd(const struct enc28j60_dev *priv) {
     uint16_t result = 0;
 
@@ -210,7 +209,7 @@ static uint16_t phy_scan_rd(const struct enc28j60_dev *priv) {
     result |= rcr(priv, ENC28J60_MIRDL);
 
     return result;
-}
+}   // */
 
 /*!
  * @brief Get OUI from PHY-registers and making it canonical
@@ -273,7 +272,7 @@ static int8_t rx_buf_init(struct enc28j60_dev *priv,
 
 /*!
  * @brief TX buffer initialize.
- * ETXST and ATXND will not be changed after transmit operation.
+ * ETXST and ETXND will not be changed after transmit operation.
  * @param start Start address of TX buffer
  * @param end End address of TX buffer
  * @return 0 if success; errno if error
@@ -285,7 +284,7 @@ static int8_t tx_buf_init(struct enc28j60_dev *priv,
         // errno
         return -1;
     }
-    
+
     wcr(priv, ENC28J60_ETXSTL, (uint8_t)start);
     wcr(priv, ENC28J60_ETXSTH, (uint8_t)(start >> 8));
 
@@ -447,22 +446,22 @@ static void enc28j60_get_mac(const struct enc28j60_dev *priv, uint8_t *mac_buf) 
  *         \a NETDEV_TX_BUSY if tx was busy
  */
 static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
-                                     struct net_dev_s *net_dev) {
+                                       struct net_dev_s *net_dev) {
     /* Per Packet Control Byte. 0 by default.
         Otherwise, refer to the datasheet on chapter 7.1 */
     uint8_t ppcb = 0;
     uint16_t end;
     struct enc28j60_dev *priv = net_dev->priv;
+    uint8_t sreg = SREG;
 
-    /* check if transfer is in progress. just in case */
-    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {
-        return NETDEV_TX_BUSY;
-    }
+    cli();
 
     net_dev_tx_disallow(net_dev);
 
-    priv->tx_nbuff = net_buff;
-    
+    /* check if transfer is in progress. just in case */
+    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS))
+        return NETDEV_TX_BUSY;
+
     /* set EWRPT - pointer to start of transmit buffer */
     wcr(priv, ENC28J60_EWRPTL, (uint8_t)ENC28J60_TXSTART_INIT);
     wcr(priv, ENC28J60_EWRPTH, (uint8_t)(ENC28J60_TXSTART_INIT >> 8));
@@ -482,8 +481,9 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
     /* Start the transmission process */
     bfs(priv, ENC28J60_ECON1, _BV(TXRTS));
 
-    free_net_buff(priv->tx_nbuff);
-    priv->tx_nbuff = NULL;
+    free_net_buff(net_buff);
+
+    SREG = sreg;
 
     return NETDEV_TX_OK;
 }
@@ -853,6 +853,8 @@ static int8_t enc28j60_init(struct enc28j60_dev *priv) {
                   (phy_read(priv, ENC28J60_PHCON2) | _BV(HDLDIS)));
     }
 
+    net_dev->mtu = 1500;
+
     printf_P(PSTR("ENC28J60 initialized with RevID %d, %S Duplex\n"),
              revid, net_dev->flags.full_duplex ? PSTR("Full") : PSTR("Half"));
 
@@ -881,8 +883,7 @@ static int8_t enc28j60_open(struct net_dev_s *net_dev) {
     return 0;
 }
 
-/** TODO: move this to PROGMEM */
-static const struct net_dev_ops_s enc28j60_net_dev_ops = {
+static const struct net_dev_ops_s enc28j60_net_dev_ops PROGMEM = {
     .init = NULL,
     .open = enc28j60_open,
     .stop = enc28j60_disable,
