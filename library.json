@@ -1,6 +1,6 @@
 {
     "name": "ENC28J60",
-    "version": "0.5.0",
+    "version": "0.5.1",
     "description": "Library for ENC28J60 - Stand-Alone Ethernet Controller with SPI Interface.",
     "keywords": "avr, baskiton, ethernet, enc28j60, 28j60",
     "repository":
