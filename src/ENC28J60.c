@@ -459,8 +459,10 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
     net_dev_tx_disallow(net_dev);
 
     /* check if transfer is in progress. just in case */
-    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS))
+    if (rcr(priv, ENC28J60_ECON1) & _BV(TXRTS)) {
+        SREG = sreg;
         return NETDEV_TX_BUSY;
+    }
 
     /* set EWRPT - pointer to start of transmit buffer */
     wcr(priv, ENC28J60_EWRPTL, (uint8_t)ENC28J60_TXSTART_INIT);
