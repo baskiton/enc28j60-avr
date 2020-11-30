@@ -319,10 +319,10 @@ static void enc28j60_enable(const struct enc28j60_dev *priv) {
 
     // clear all interrupt flags
     bfc(priv, ENC28J60_EIR, (_BV(PKTIF) | _BV(DMAIF) | _BV(LINKIF) |
-                                      _BV(TXIF) | _BV(TXERIF) | _BV(RXERIF)));
+                             _BV(TXIF) | _BV(TXERIF) | _BV(RXERIF)));
     // enable interrupts (except for DMA, which is currently not used)
     wcr(priv, ENC28J60_EIE, (_BV(INTIE) | _BV(PKTIE) | _BV(LINKIE) |
-                                      _BV(TXIE) | _BV(TXERIF) | _BV(RXERIE)));
+                             _BV(TXIE) | _BV(TXERIF) | _BV(RXERIE)));
 
     /* enable receive */
     bfs(priv, ENC28J60_ECON1, _BV(RXEN));
@@ -425,20 +425,6 @@ uint8_t enc28j60_read_rev_id(const struct net_dev_s *net_dev) {
 }
 
 /*!
- * @brief Get MAC-address
- * @param mac_buf Buffer to store MAC-addr.
- * Make sure that buffer is long enough (default 6 bytes).
- */
-static void enc28j60_get_mac(const struct enc28j60_dev *priv, uint8_t *mac_buf) {
-    mac_buf[0] = rcr(priv, ENC28J60_MAADR1);
-    mac_buf[1] = rcr(priv, ENC28J60_MAADR2);
-    mac_buf[2] = rcr(priv, ENC28J60_MAADR3);
-    mac_buf[3] = rcr(priv, ENC28J60_MAADR4);
-    mac_buf[4] = rcr(priv, ENC28J60_MAADR5);
-    mac_buf[5] = rcr(priv, ENC28J60_MAADR6);
-}
-
-/*!
  * @brief Transmitting Packet
  * @param net_buff Pointer to buffer with data
  * @param dev Device
@@ -482,6 +468,16 @@ static int8_t enc28j60_packet_transmit(struct net_buff_s *net_buff,
 
     /* Start the transmission process */
     bfs(priv, ENC28J60_ECON1, _BV(TXRTS));
+    if (!(rcr(priv, ENC28J60_ECON1) & _BV(TXRTS))) {
+        // TXRTS not sets. Trying
+        bfc(priv, ENC28J60_ECON1, _BV(TXRTS));
+        bfs(priv, ENC28J60_ECON1, _BV(TXRTS));
+    }
+    if (!(rcr(priv, ENC28J60_ECON1) & _BV(TXRTS))) {
+        // nope? exit with error =(
+        SREG = sreg;
+        return -1;
+    }
 
     free_net_buff(net_buff);
 
@@ -667,9 +663,10 @@ void enc28j60_irq_handler(struct net_dev_s *net_dev) {
         if (rcr(priv, ENC28J60_ESTAT) & _BV(TXABRT)) {
             // abort
             printf_P(PSTR("    TX abort\n"));
-        } else {
+        } /** else {
             // transmit success
-        }
+            printf_P(PSTR("    TX complete\n"));
+        } */
         net_dev_tx_allow(net_dev);
 
         bfc(priv, ENC28J60_EIR, _BV(TXIF));
@@ -916,8 +913,6 @@ int8_t enc28j60_probe(spi_dev_t *spi_dev) {
     spi_dev->priv_data = priv;
     priv->net_dev = ndev;
     priv->spi_dev = spi_dev;
-
-    enc28j60_get_mac(priv, mac);
 
     ret = enc28j60_init(priv);
     if (ret) {
